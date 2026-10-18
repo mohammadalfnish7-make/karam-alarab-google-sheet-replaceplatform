@@ -159,6 +159,7 @@ class ExitRecord(Base):
     mark: Mapped[str | None] = mapped_column(Text, nullable=True)
     supplier: Mapped[str | None] = mapped_column(Text, nullable=True)
     invoice_no: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invoice_numbers: Mapped[Any | None] = mapped_column(json_type(), nullable=True)
     cartons: Mapped[int | None] = mapped_column(Integer, nullable=True)
     date_of_submission: Mapped[datetime | None] = mapped_column(Date, nullable=True)
     status: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -179,6 +180,53 @@ Index(
     sqlite_where=text("deleted_at IS NULL"),
     postgresql_where=text("deleted_at IS NULL"),
 )
+
+
+class DocumentExpiry(Base):
+    """Company / employee / vehicle document expiry for reminders."""
+
+    __tablename__ = "document_expiries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)  # company | employee | vehicle
+    sl_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    document_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_no: Mapped[str | None] = mapped_column(Text, nullable=True)
+    company_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    holder_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plate_no: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expiry_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index("ix_document_expiries_category", DocumentExpiry.category)
+Index("ix_document_expiries_expiry", DocumentExpiry.expiry_date)
+
+
+class CargoFile(Base):
+    """Evidence file (delivery note / scale photo) linked to a sea or air cargo row."""
+
+    __tablename__ = "cargo_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # note | scale
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    stored_path: Mapped[str] = mapped_column(Text, nullable=False)
+    mime: Mapped[str] = mapped_column(String(80), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    extracted_json: Mapped[Any | None] = mapped_column(json_type(), nullable=True)
+    uploaded_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+Index("ix_cargo_files_entity", CargoFile.entity_type, CargoFile.entity_id)
+Index("ix_cargo_files_sha", CargoFile.sha256)
 
 
 class PdfDocument(Base):
@@ -204,3 +252,46 @@ class PdfExtraction(Base):
     parsed_json: Mapped[Any | None] = mapped_column(json_type(), nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    input_json: Mapped[Any | None] = mapped_column(json_type(), nullable=True)
+    steps_json: Mapped[Any] = mapped_column(json_type(), nullable=False, default=list)
+    output_json: Mapped[Any | None] = mapped_column(json_type(), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_stack: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RequestLog(Base):
+    __tablename__ = "request_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    method: Mapped[str] = mapped_column(String(12), nullable=False)
+    path: Mapped[str] = mapped_column(String(255), nullable=False)
+    query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+Index("ix_agent_runs_started", AgentRun.started_at)
+Index("ix_agent_runs_agent", AgentRun.agent_name, AgentRun.status)
+Index("ix_request_logs_created", RequestLog.created_at)
+Index("ix_request_logs_path", RequestLog.path, RequestLog.status_code)

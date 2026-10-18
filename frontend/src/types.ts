@@ -45,6 +45,7 @@ export type Cargo = {
   shipping_route?: string | null
   stage?: string | null
   status?: string | null
+  file_count?: number
   created_at: string
   created_by: number | null
   updated_at: string | null
@@ -62,6 +63,7 @@ export type ExitRow = {
   mark: string | null
   supplier: string | null
   invoice_no: string | null
+  invoice_numbers: string[]
   cartons: number | null
   date_of_submission: string | null
   status: string | null
@@ -88,6 +90,51 @@ export type AuditEntry = {
   created_at: string
 }
 
+export type AgentStep = {
+  name: string
+  at: string
+  duration_ms?: number | null
+  input: unknown
+  output: unknown
+  error: string | null
+}
+
+export type AgentRun = {
+  id: number
+  agent_name: string
+  status: string
+  provider: string | null
+  model: string | null
+  actor_user_id: number | null
+  actor_email: string | null
+  entity_type: string | null
+  entity_id: string | null
+  error_message: string | null
+  step_count: number
+  duration_ms: number | null
+  started_at: string
+  finished_at: string | null
+  input_json?: unknown
+  steps_json?: AgentStep[]
+  output_json?: unknown
+  error_stack?: string | null
+}
+
+export type RequestLog = {
+  id: number
+  method: string
+  path: string
+  query: string | null
+  status_code: number
+  duration_ms: number
+  actor_user_id: number | null
+  actor_email: string | null
+  ip: string | null
+  user_agent: string | null
+  error_message: string | null
+  created_at: string
+}
+
 export type Enums = {
   shipping_routes: string[]
   stages: string[]
@@ -96,3 +143,32 @@ export type Enums = {
 }
 
 export type SaveResult<T> = { item: T; warnings: Warning[] }
+
+export type Breakdown = { label: string; count: number }
+
+export type SheetSummary = {
+  rows: number
+  needs_review: number
+  cartons: number
+  breakdown: Breakdown[]
+}
+
+export type Dashboard = {
+  sea: SheetSummary
+  air: SheetSummary
+  exit: SheetSummary
+}
+
+export type Shipment = {
+  kind: "sea" | "air"
+  id: number
+  date_received: string | null
+  customer_code: string | null
+  company_name: string | null
+  cartons: number | null
+  system_code: string | null
+  shipment_number: string | null
+  shipping_route: string | null
+  progress: string | null
+  needs_review: boolean
+}

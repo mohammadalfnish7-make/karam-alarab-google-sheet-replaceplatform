@@ -1,9 +1,22 @@
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.audit import history_for
+from app.audit import history_for, write_audit
+from app.cargo_files import (
+    counts_for,
+    file_out,
+    get_file,
+    list_files,
+    parse_extracted,
+    require_cargo,
+    store_file,
+)
 from app.constants import ENTITY_TYPES
 from app.deps import get_current_user, get_db, require_admin
+from app.errors import AppError
 from app.models import AirCargo, ExitRecord, SeaCargo, User
 from app.present import AIR_FIELDS, EXIT_FIELDS, SEA_FIELDS, cargo_out, exit_out
 from app.records import (
@@ -76,7 +89,9 @@ def register_cargo(kind: str) -> None:
 
     @router.get(f"/{kind}/{{item_id}}", operation_id=f"get_{kind}")
     def get_item(item_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        return cargo_out(visible(db.get(model, item_id), user), kind)
+        row = visible(db.get(model, item_id), user)
+        counts = counts_for(db, entity, [row.id])
+        return cargo_out(row, kind, file_count=counts.get(row.id, 0))
 
     @router.patch(f"/{kind}/{{item_id}}", operation_id=f"update_{kind}")
     def update_item(
@@ -115,6 +130,98 @@ def register_cargo(kind: str) -> None:
     def history(item_id: int, _user: User = Depends(get_current_user), db: Session = Depends(get_db)):
         require_row(db.get(model, item_id))
         return history_for(db, entity, item_id)
+
+    @router.get(f"/{kind}/{{item_id}}/files", operation_id=f"list_{kind}_files")
+    def list_item_files(
+        item_id: int,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        require_cargo(db, kind, item_id, user)
+        return {"items": list_files(db, entity, item_id)}
+
+    @router.post(f"/{kind}/{{item_id}}/files", operation_id=f"upload_{kind}_files")
+    async def upload_item_files(
+        item_id: int,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        require_cargo(db, kind, item_id, user)
+        form = await request.form()
+        uploads = [item for item in form.getlist("files") if hasattr(item, "read")]
+        kind_tags = [str(value) for value in form.getlist("kinds")]
+        labels = [str(value) for value in form.getlist("labels")]
+        extracted_list = [str(value) for value in form.getlist("extracted")]
+        if not uploads:
+            raise AppError(422, {"message": "Upload at least one file"})
+        if len(kind_tags) != len(uploads):
+            raise AppError(422, {"message": "Each file needs a kind (note or scale)"})
+        stored = []
+        for index, upload in enumerate(uploads):
+            content = await upload.read()
+            label = labels[index] if index < len(labels) else ""
+            if not label:
+                label = f"{'Note' if kind_tags[index] == 'note' else 'Scale'} {index + 1}"
+            raw_extracted = extracted_list[index] if index < len(extracted_list) else None
+            row = store_file(
+                db,
+                entity_type=entity,
+                entity_id=item_id,
+                kind=kind_tags[index],
+                label=label,
+                filename=getattr(upload, "filename", None) or f"file-{index + 1}",
+                content=content,
+                mime=getattr(upload, "content_type", None),
+                extracted=parse_extracted(raw_extracted),
+                user=user,
+            )
+            stored.append(row)
+        write_audit(
+            db,
+            actor_user_id=user.id,
+            action="cargo_files_upload",
+            entity_type=entity,
+            entity_id=item_id,
+            before=None,
+            after={"files": [{"id": row.id, "kind": row.kind, "filename": row.original_filename} for row in stored]},
+            changed=["files"],
+            request=request,
+        )
+        db.commit()
+        return {"items": [file_out(row) for row in stored]}
+
+    @router.get(f"/{kind}/{{item_id}}/files/{{file_id}}", operation_id=f"view_{kind}_file")
+    def view_item_file(
+        item_id: int,
+        file_id: int,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        require_cargo(db, kind, item_id, user)
+        row = get_file(db, entity, item_id, file_id)
+        return FileResponse(
+            path=Path(row.stored_path),
+            media_type=row.mime,
+            filename=row.original_filename,
+            content_disposition_type="inline",
+        )
+
+    @router.get(f"/{kind}/{{item_id}}/files/{{file_id}}/download", operation_id=f"download_{kind}_file")
+    def download_item_file(
+        item_id: int,
+        file_id: int,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        require_cargo(db, kind, item_id, user)
+        row = get_file(db, entity, item_id, file_id)
+        return FileResponse(
+            path=Path(row.stored_path),
+            media_type=row.mime,
+            filename=row.original_filename,
+            content_disposition_type="attachment",
+        )
 
 
 @router.get("/sea/next-shipment", operation_id="next_sea_shipment")

@@ -6,6 +6,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +23,10 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       EXCEL_IMPORT_PATH: "/excel/WM _NEW  Load Plan.xlsx"
+      DOCUMENT_EXPIRY_PATH: ""
       UPLOAD_DIR: /data/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - pdf_uploads:/data/uploads
       - "./excel sheet:/excel:ro"
@@ -40,8 +45,13 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    environment:
+      # Optional: API_UPSTREAM=host.docker.internal:8000 when the API runs on the host
+      API_UPSTREAM: ${API_UPSTREAM:-api:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      api:
+      postgres:
         condition: service_healthy
 
 volumes:

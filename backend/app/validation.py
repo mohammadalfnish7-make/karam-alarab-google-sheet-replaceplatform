@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.constants import AIR_STATUSES, EXIT_STATUSES, SEA_STAGES
+from app.constants import AIR_STATUSES, DEFAULT_SEA_STAGE, EXIT_STATUSES, SEA_STAGES
 from app.models import AirCargo, Company, Customer, SeaCargo, Supplier
 
 
@@ -36,6 +36,94 @@ def parse_dmy(text: str) -> date | None:
         return date(year, month, day)
     except ValueError:
         return None
+
+
+def parse_compact_dmy(text: str) -> date | None:
+    """1107/2026 is 11/07/2026 with the first slash missing."""
+    match = re.fullmatch(r"(\d{2})(\d{2})/(\d{4})", text.strip())
+    if not match:
+        return None
+    day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+_INVOICE_TOKEN = re.compile(r"^[A-Za-z]*\d{3,}[A-Za-z]?$")
+_INVOICE_YEAR = re.compile(r"^(\d{4}/)(\d{3,})$")
+
+
+def split_invoices(value: str | None) -> list[str]:
+    """Turn one sheet cell into each invoice number it lists.
+
+    A shared year prefix is copied onto each tail: 2026/00104-00105 becomes
+    2026/00104 and 2026/00105. A code that uses a dash inside one number,
+    such as SL-22891-26 or 013-26, stays one invoice.
+    """
+    if not value or not str(value).strip():
+        return []
+    chunks = re.split(r"[\n,;]+|\s*/\s+|\s+/\s*", str(value).replace("\r", "\n"))
+    numbers: list[str] = []
+    for chunk in chunks:
+        chunk = re.sub(r"\s+", " ", chunk).strip(" -/;")
+        if not chunk:
+            continue
+        for piece in _slash_invoices(chunk):
+            numbers.extend(_expand_invoice_chunk(piece))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for number in numbers:
+        key = number.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(number)
+    return unique
+
+
+def _slash_invoices(chunk: str) -> list[str]:
+    if _INVOICE_YEAR.match(chunk):
+        return [chunk]
+    parts = [part.strip() for part in chunk.split("/") if part.strip()]
+    if len(parts) >= 2 and all(_INVOICE_TOKEN.match(part) for part in parts):
+        return parts
+    return [chunk]
+
+
+def _expand_invoice_chunk(chunk: str) -> list[str]:
+    parts = [part.strip() for part in chunk.split("-") if part.strip()]
+    if len(parts) < 2:
+        return [chunk]
+    year = _INVOICE_YEAR.match(parts[0])
+    if year and all(re.fullmatch(r"\d{3,}", part) for part in parts[1:]):
+        prefix = year.group(1)
+        return [parts[0], *[prefix + part for part in parts[1:]]]
+    if all(_INVOICE_TOKEN.match(part) for part in parts):
+        return parts
+    return [chunk]
+
+
+def bring_date_not_after_today(value: date, today: date | None = None) -> date:
+    """Sheet dates after today are a day/month swap or a year filled down from 2026."""
+    today = today or date.today()
+    if value <= today:
+        return value
+    if value.day <= 12:
+        try:
+            swapped = date(value.year, value.day, value.month)
+        except ValueError:
+            swapped = None
+        if swapped is not None and swapped <= today:
+            value = swapped
+    if value > today and value.year > today.year:
+        try:
+            pulled = date(today.year, value.month, value.day)
+        except ValueError:
+            pulled = None
+        if pulled is not None and pulled <= today:
+            return pulled
+    return value
 
 
 def excel_serial_to_date(serial: int) -> date | None:
@@ -59,9 +147,11 @@ def canonical_choice(value: str, options: list[str]) -> str | None:
 
 def canonical_stage(value: str) -> str | None:
     text = re.sub(r"\s+", " ", value.strip())
-    compact = re.sub(r"\s+", "", text).upper()
+    compact = re.sub(r"\s+", "", text).upper().replace("📦", "")
     if compact == "STAGE2":
         return "STAGE 2"
+    if compact == "WH":
+        return DEFAULT_SEA_STAGE
     return canonical_choice(text, SEA_STAGES)
 
 
@@ -351,6 +441,8 @@ def validate_cargo(
         values["date_received"] = parsed_date
         if parsed_date is None:
             warnings.append(warning("DATE_RECEIVED_BLANK", "date_received", "Date received is blank"))
+        elif parsed_date > date.today():
+            add_error("date_received", "Date is after today")
 
     customer = as_text(data.get("customer_code"))
     values["customer_code"] = customer
@@ -440,7 +532,7 @@ def validate_cargo(
                 add_error("shipping_route", "Route must be IRAN or TURKEY")
         stage_raw = data.get("stage")
         if stage_raw is None or (isinstance(stage_raw, str) and not stage_raw.strip()):
-            values["stage"] = None
+            values["stage"] = DEFAULT_SEA_STAGE
         else:
             stage_text = str(stage_raw).strip()
             canon = canonical_stage(stage_text)
@@ -553,9 +645,24 @@ def validate_exit(
     elif not looks_real(supplier):
         add_error("supplier", "Supplier cannot be only dots or punctuation")
 
-    invoice = as_text(data.get("invoice_no"))
-    values["invoice_no"] = invoice
-    if not invoice:
+    numbers: list[str] = []
+    raw_numbers = data.get("invoice_numbers")
+    if isinstance(raw_numbers, list) and any(as_text(item) for item in raw_numbers):
+        for item in raw_numbers:
+            numbers.extend(split_invoices(as_text(item)))
+    else:
+        numbers = split_invoices(as_text(data.get("invoice_no")))
+    seen: set[str] = set()
+    invoice_numbers: list[str] = []
+    for number in numbers:
+        key = number.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        invoice_numbers.append(number)
+    values["invoice_numbers"] = invoice_numbers
+    values["invoice_no"] = ", ".join(invoice_numbers) if invoice_numbers else None
+    if not invoice_numbers:
         warnings.append(warning("INVOICE_BLANK", "invoice_no", "Invoice number is blank"))
 
     cartons, carton_error = parse_int(data.get("cartons"))
@@ -579,6 +686,8 @@ def validate_exit(
             warnings.append(
                 warning("DATE_OF_SUBMISSION_BLANK", "date_of_submission", "Date of submission is blank")
             )
+        elif parsed_date > date.today():
+            add_error("date_of_submission", "Date is after today")
 
     status_raw = data.get("status")
     if status_raw is None or (isinstance(status_raw, str) and not status_raw.strip()):

@@ -42,6 +42,8 @@ class CargoIn(BaseModel):
     confirm_new_customer: bool = False
     confirm_new_company: bool = False
     confirm_new_supplier: bool = False
+    # Intake weight policy payload: originals, overrides, preferred totals, flags.
+    intake_check: dict | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -54,6 +56,7 @@ class ExitIn(BaseModel):
     mark: Any = None
     supplier: Any = None
     invoice_no: Any = None
+    invoice_numbers: Any = None
     cartons: Any = None
     date_of_submission: Any = None
     status: Any = None
@@ -65,6 +68,10 @@ class ExitIn(BaseModel):
     @classmethod
     def blanks(cls, data):
         return _blank_to_none(data)
+
+
+class ExpiryDateIn(BaseModel):
+    expiry_date: str | None = None
 
 
 class PdfConfirm(BaseModel):

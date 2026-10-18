@@ -10,21 +10,27 @@ from app.bootstrap import seed_admin
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.errors import AppError
-from app.importer import import_workbook
+from app.expiry_import import import_document_expiry
+from app.importer import import_workbook, repair_dates_after_today, repair_invoice_numbers
 from app.models import (  # noqa: F401
+    AgentRun,
     AirCargo,
     AuditLog,
+    CargoFile,
     Company,
     Customer,
+    DocumentExpiry,
     ExitRecord,
     ImportBatch,
     PdfDocument,
     PdfExtraction,
+    RequestLog,
     SeaCargo,
     Supplier,
     User,
 )
-from app.routers import audit, auth, intake, lookups, pdf, records, users
+from app.request_log import RequestLogMiddleware
+from app.routers import agent_runs, audit, auth, expiry, intake, lookups, overview, pdf, records, request_logs, users
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("karam")
@@ -47,12 +53,27 @@ async def lifespan(_app: FastAPI):
                 logger.info("Excel import %s", result)
             else:
                 logger.warning("Excel import file not found: %s", excel)
+        repaired = repair_dates_after_today(db)
+        if repaired["received_corrected"] or repaired["exit_corrected"]:
+            logger.info("Date repair %s", repaired)
+        invoices = repair_invoice_numbers(db)
+        if invoices["invoices_split"]:
+            logger.info("Invoice repair %s", invoices)
+        expiry_path = settings.document_expiry_path.strip()
+        if expiry_path:
+            path = Path(expiry_path)
+            if path.is_file():
+                result = import_document_expiry(db, path)
+                logger.info("Document expiry import %s", result)
+            else:
+                logger.warning("Document expiry file not found: %s", expiry_path)
     finally:
         db.close()
     yield
 
 
 app = FastAPI(title="Karam Al Arab Load Plan", lifespan=lifespan)
+app.add_middleware(RequestLogMiddleware)
 
 origins = [item.strip() for item in settings.cors_origins.split(",") if item.strip()]
 if origins:
@@ -76,9 +97,13 @@ def health():
 
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(overview.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(records.router, prefix="/api")
 app.include_router(lookups.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
+app.include_router(agent_runs.router, prefix="/api")
+app.include_router(request_logs.router, prefix="/api")
 app.include_router(pdf.router, prefix="/api")
 app.include_router(intake.router, prefix="/api")
+app.include_router(expiry.router, prefix="/api")

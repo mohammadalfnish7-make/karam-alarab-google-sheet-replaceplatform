@@ -1,10 +1,10 @@
-import base64
+import hashlib
 import json
 import re
+import time
 
-import httpx
-
-from app.config import settings
+from app.agents.llm import generate_content, model_name, provider
+from app.agents.trace import Trace
 from app.errors import AppError
 
 NOTE_PROMPT = (
@@ -126,85 +126,70 @@ def _object(text: str) -> dict:
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
-    data = json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", cleaned)
+        if not match:
+            raise
+        data = json.loads(match.group(0))
     if not isinstance(data, dict):
         raise ValueError("Extraction JSON must be an object")
     return data
 
 
-def _reply_text(body: dict) -> tuple[str, str]:
-    candidates = body.get("candidates") or []
-    if not candidates:
-        return "", ""
-    candidate = candidates[0]
-    parts = candidate.get("content", {}).get("parts") or []
-    visible = [part for part in parts if isinstance(part, dict) and not part.get("thought")]
-    chosen = visible or [part for part in parts if isinstance(part, dict)]
-    text = "\n".join(part.get("text", "") for part in chosen)
-    return text, str(candidate.get("finishReason") or "")
-
-
-def _ask(file_bytes: bytes, mime: str, prompt: str, max_tokens: int) -> dict:
-    model = settings.gemini_model.strip() or "gemini-2.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inlineData": {
-                            "mimeType": mime,
-                            "data": base64.b64encode(file_bytes).decode("ascii"),
-                        }
-                    },
-                ],
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-            "maxOutputTokens": max_tokens,
-            "thinkingConfig": {"thinkingBudget": 0},
-        },
-    }
-    try:
-        response = httpx.post(
-            url,
-            headers={"x-goog-api-key": settings.gemini_api_key.strip()},
-            json=payload,
-            timeout=120,
-        )
-        response.raise_for_status()
-        return response.json()
-    except httpx.HTTPError as exc:
-        raise AppError(
-            502,
-            {"message": f"Gemini request failed: {exc}", "field_errors": {}, "warnings": []},
-        ) from exc
-
-
-def read_check_file(file_bytes: bytes, mime: str, kind: str) -> dict:
-    if not settings.gemini_api_key.strip():
-        raise AppError(
-            503,
-            {
-                "message": "GEMINI_API_KEY is not configured. The PDF is stored; extraction was not run.",
-                "field_errors": {},
-                "warnings": [],
-            },
-        )
+def read_check_file(file_bytes: bytes, mime: str, kind: str, *, actor_user_id: int | None = None) -> dict:
     prompt = SCALE_PROMPT if kind == "scale" else NOTE_PROMPT
-    text = ""
-    for max_tokens in (2048, 8192):
-        reply, finish = _reply_text(_ask(file_bytes, mime, prompt, max_tokens))
-        text = reply
-        if not text.strip():
-            continue
-        try:
-            return normalize_check(kind, _object(text))
-        except (json.JSONDecodeError, ValueError):
-            if finish != "MAX_TOKENS":
-                break
-    raise AppError(422, {"message": "Could not read this file. Try again.", "field_errors": {}, "warnings": []})
+    with Trace(
+        f"intake.{kind}",
+        actor_user_id=actor_user_id,
+        input_json={
+            "kind": kind,
+            "mime": mime,
+            "byte_size": len(file_bytes),
+            "sha256": hashlib.sha256(file_bytes).hexdigest(),
+            "prompt": prompt,
+        },
+    ) as run:
+        text = ""
+        budgets = (2048, 8192)
+        for max_tokens in budgets:
+            t0 = time.perf_counter()
+            result = generate_content(
+                prompt=prompt,
+                file_bytes=file_bytes,
+                mime=mime,
+                max_tokens=max_tokens,
+                thinking_budget=0,
+            )
+            llm_ms = max(0, int((time.perf_counter() - t0) * 1000))
+            text = result["text"]
+            finish = result["finish"]
+            run.step(
+                "llm",
+                input={"max_tokens": max_tokens, "provider": provider(), "model": model_name()},
+                output={
+                    "finish": finish,
+                    "text": text,
+                    "usage": result.get("usage"),
+                    "provider": result.get("provider") or provider(),
+                    "model": result.get("model") or model_name(),
+                },
+                duration_ms=llm_ms,
+            )
+            if not text.strip():
+                continue
+            try:
+                t1 = time.perf_counter()
+                fields = normalize_check(kind, _object(text))
+                parse_ms = max(0, int((time.perf_counter() - t1) * 1000))
+            except (json.JSONDecodeError, ValueError) as exc:
+                run.step("parse", input={"finish": finish}, error=str(exc), duration_ms=0)
+                if finish.upper() not in {"MAX_TOKENS", "LENGTH"}:
+                    break
+                continue
+            run.step("parse", output=fields, duration_ms=parse_ms)
+            run.pending_output = fields
+            return fields
+        run.pending_output = {"text": text}
+        raise AppError(422, {"message": "Could not read this file. Try again.", "field_errors": {}, "warnings": []})

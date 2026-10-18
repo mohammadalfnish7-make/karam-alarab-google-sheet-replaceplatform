@@ -3,7 +3,7 @@ import { api, showValue } from "../api"
 import type { AuditEntry, Page } from "../types"
 
 const ACTIONS = ["login", "logout", "login_failed", "create", "update", "delete", "restore", "pdf_upload", "pdf_extract", "pdf_confirm"]
-const ENTITIES = ["sea_cargo", "air_cargo", "exit_record", "pdf_document", "session", "user"]
+const ENTITIES = ["sea_cargo", "air_cargo", "exit_record", "document_expiry", "pdf_document", "session", "user"]
 
 export function AuditPage() {
   const [rows, setRows] = useState<AuditEntry[]>([])
@@ -75,12 +75,17 @@ export function AuditPage() {
                 <td>{row.actor_email || "—"}</td>
                 <td>{row.action}</td>
                 <td>{row.entity_type || ""} {row.entity_id || ""}</td>
-                <td>
-                  <details>
+                <td className="audit-changes">
+                  <details className="change-log">
                     <summary>{(row.changed_fields || []).length} fields</summary>
-                    <ul>
+                    <ul className="change-list">
                       {(row.changed_fields || []).map((change) => (
-                        <li key={change.field}>{change.field}: {showValue(change.old)} → {showValue(change.new)}</li>
+                        <li key={change.field}>
+                          <span className="change-field">{change.field}</span>
+                          <span className="change-old">{showValue(change.old)}</span>
+                          <span className="change-arrow" aria-hidden="true">→</span>
+                          <span className="change-new">{showValue(change.new)}</span>
+                        </li>
                       ))}
                     </ul>
                   </details>

@@ -5,8 +5,11 @@ os.environ["JWT_SECRET"] = "test-secret"
 os.environ["ADMIN_EMAIL"] = "admin@example.com"
 os.environ["ADMIN_PASSWORD"] = "change-me"
 os.environ["EXCEL_IMPORT_PATH"] = ""
+os.environ["DOCUMENT_EXPIRY_PATH"] = ""
 os.environ["TESTING"] = "1"
-os.environ["GEMINI_API_KEY"] = ""
+os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["LLM_PROVIDER"] = "anthropic"
+os.environ["LLM_MODEL"] = "claude-haiku-5-5"
 os.environ["UPLOAD_DIR"] = "/tmp/karam-test-uploads"
 
 from fastapi.testclient import TestClient

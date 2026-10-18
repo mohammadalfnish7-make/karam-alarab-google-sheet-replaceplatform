@@ -25,6 +25,14 @@ type FormState = {
   status: string
 }
 
+function statusClass(status: string | null | undefined) {
+  if (status === "DONE") return "exit-done"
+  if (status === "Submitted") return "exit-submitted"
+  if (status === "Pending") return "exit-pending"
+  if (status === "CANCELED") return "exit-canceled"
+  return ""
+}
+
 const emptyForm = (): FormState => ({
   mark: "",
   supplier: "",
@@ -38,7 +46,7 @@ function fromRow(row: ExitRow): FormState {
   return {
     mark: row.mark ?? "",
     supplier: row.supplier ?? "",
-    invoice_no: row.invoice_no ?? "",
+    invoice_no: (row.invoice_numbers?.length ? row.invoice_numbers : row.invoice_no ? [row.invoice_no] : []).join("\n"),
     cartons: row.cartons == null ? "" : String(row.cartons),
     date_of_submission: row.date_of_submission ?? "",
     status: row.status ?? "",
@@ -128,10 +136,14 @@ export function ExitPage() {
                 <td>{row.no}</td>
                 <td>{row.mark ?? ""}</td>
                 <td className="clip">{row.supplier ?? ""}</td>
-                <td>{row.invoice_no ?? ""}</td>
+                <td className="invoices">
+                  {(row.invoice_numbers?.length ? row.invoice_numbers : row.invoice_no ? [row.invoice_no] : []).map((number) => (
+                    <span key={number}>{number}</span>
+                  ))}
+                </td>
                 <td>{row.cartons ?? ""}</td>
                 <td>{row.date_of_submission ?? ""}</td>
-                <td>{row.status ?? ""}</td>
+                <td className={statusClass(row.status)}>{row.status ?? ""}</td>
                 <td><Flags legacy={row.legacy} review={row.needs_review} deleted={Boolean(row.deleted_at)} /></td>
               </tr>
             ))}
@@ -193,6 +205,7 @@ function ExitDrawer({
     const payload = {
       mark: form.mark.trim() || null,
       supplier: form.supplier.trim() || null,
+      invoice_numbers: form.invoice_no.split(/\n+/).map((item) => item.trim()).filter(Boolean),
       invoice_no: form.invoice_no.trim() || null,
       cartons: form.cartons.trim() ? Number(form.cartons) : null,
       date_of_submission: form.date_of_submission || null,
@@ -281,8 +294,9 @@ function ExitDrawer({
           <Field label="Supplier" error={errors.supplier}>
             <Suggest id="exit-supplier" value={form.supplier} invalid={Boolean(errors.supplier)} onChange={(value) => update("supplier", value)} loader={loadSuppliers} />
           </Field>
-          <Field label="Invoice" error={errors.invoice_no} wide>
-            <input className={errors.invoice_no ? "invalid" : ""} value={form.invoice_no} onChange={(event) => update("invoice_no", event.target.value)} />
+          <Field label="Invoices" error={errors.invoice_no} wide>
+            <textarea className={errors.invoice_no ? "invalid invoice-box" : "invoice-box"} value={form.invoice_no} onChange={(event) => update("invoice_no", event.target.value)} placeholder="One invoice number on each line" />
+            <small>One invoice number on each line. A company can have more than one.</small>
           </Field>
           <Field label="Cartons" error={errors.cartons}>
             <input className={errors.cartons ? "invalid" : ""} inputMode="numeric" value={form.cartons} onChange={(event) => update("cartons", event.target.value)} />
@@ -291,7 +305,7 @@ function ExitDrawer({
             <input className={errors.date_of_submission ? "invalid" : ""} type="date" value={form.date_of_submission} onChange={(event) => update("date_of_submission", event.target.value)} />
           </Field>
           <Field label="Status" error={errors.status}>
-            <select className={errors.status ? "invalid" : ""} value={form.status} onChange={(event) => update("status", event.target.value)}>
+            <select className={[statusClass(form.status), errors.status ? "invalid" : ""].filter(Boolean).join(" ")} value={form.status} onChange={(event) => update("status", event.target.value)}>
               <option value="">—</option>
               {statuses.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>

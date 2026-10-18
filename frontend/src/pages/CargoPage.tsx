@@ -1,7 +1,9 @@
 import { FormEvent, useCallback, useEffect, useState } from "react"
 import { api, readError } from "../api"
 import { useAuth } from "../auth"
+import { ShipmentFilesModal } from "../components/ShipmentFilesModal"
 import type { Cargo, Enums, Page, SaveResult, Warning } from "../types"
+import { IntakePage } from "./IntakePage"
 import {
   ConfirmNew,
   Drawer,
@@ -81,6 +83,7 @@ function shipmentInputValue(kind: Kind, value: string | null | undefined) {
 function formFromRow(kind: Kind, row: Cargo | null): FormState {
   const form = row ? fromRow(row) : emptyForm()
   form.shipment_number = shipmentInputValue(kind, form.shipment_number)
+  if (!row && kind === "sea" && !form.stage) form.stage = "📦 WH"
   return form
 }
 
@@ -97,6 +100,8 @@ export function CargoPage({ kind }: { kind: Kind }) {
   const [offset, setOffset] = useState(0)
   const [draftQ, setDraftQ] = useState("")
   const [q, setQ] = useState("")
+  const [filesFor, setFilesFor] = useState<Cargo | null>(null)
+  const [uploadingDlId, setUploadingDlId] = useState<number | null>(null)
   const [stage, setStage] = useState("")
   const [route, setRoute] = useState("")
   const [status, setStatus] = useState("")
@@ -106,6 +111,7 @@ export function CargoPage({ kind }: { kind: Kind }) {
   const [error, setError] = useState("")
   const [editing, setEditing] = useState<Cargo | null>(null)
   const [creating, setCreating] = useState(false)
+  const [extractor, setExtractor] = useState(false)
   const limit = 50
 
   const loadCustomers = useCallback((query: string) => lookupNames("/api/lookups/customers", "code", query), [])
@@ -137,6 +143,10 @@ export function CargoPage({ kind }: { kind: Kind }) {
   }, [kind, q, review, stage, route, status, includeDeleted, offset])
 
   useEffect(() => {
+    setExtractor(false)
+  }, [kind])
+
+  useEffect(() => {
     setOffset(0)
   }, [kind, q, review, stage, route, status, includeDeleted])
 
@@ -149,11 +159,38 @@ export function CargoPage({ kind }: { kind: Kind }) {
     setCreating(true)
   }
 
+  async function uploadDlFile(row: Cargo, file: File | null) {
+    if (!file) return
+    setUploadingDlId(row.id)
+    setError("")
+    const form = new FormData()
+    form.append("files", file)
+    form.append("kinds", "note")
+    form.append("labels", "Delivery note")
+    form.append("extracted", "{}")
+    const response = await api(`/api/${kind}/${row.id}/files`, { method: "POST", body: form })
+    setUploadingDlId(null)
+    if (!response.ok) {
+      const body = await readError(response)
+      setError(body.message || "Could not upload DL file")
+      return
+    }
+    await load()
+  }
+
+  if (extractor) return <IntakePage kind={kind} onBack={() => setExtractor(false)} />
+
   return (
     <main className="page">
       <div className="page-head">
         <h1>{kind === "sea" ? "Sea goods" : "Air shipment"}</h1>
-        <button className="btn" type="button" onClick={openNew}>Add</button>
+        <div className="page-actions">
+          <button className="btn btn-ai" type="button" onClick={() => setExtractor(true)}>
+            <AiMark />
+            Ai extractor
+          </button>
+          <button className="btn" type="button" onClick={openNew}>Add</button>
+        </div>
       </div>
       <form className="toolbar" onSubmit={(event) => { event.preventDefault(); setQ(draftQ.trim()) }}>
         <input type="search" placeholder="Search customer, company, code…" value={draftQ} onChange={(event) => setDraftQ(event.target.value)} />
@@ -202,6 +239,8 @@ export function CargoPage({ kind }: { kind: Kind }) {
               <th>Shipment</th>
               {kind === "sea" ? <th>Route</th> : null}
               <th>{kind === "sea" ? "Stage" : "Status"}</th>
+              <th>Files</th>
+              <th>DL</th>
               <th></th>
             </tr>
           </thead>
@@ -218,11 +257,51 @@ export function CargoPage({ kind }: { kind: Kind }) {
                 <td>{row.shipment_number ?? ""}</td>
                 {kind === "sea" ? <td>{row.shipping_route ?? ""}</td> : null}
                 <td>{kind === "sea" ? row.stage ?? "" : row.status ?? ""}</td>
+                <td onClick={(event) => event.stopPropagation()}>
+                  {(row.file_count ?? 0) > 0 ? (
+                    <button
+                      className="btn-quiet sf-view-files"
+                      type="button"
+                      title={`View files (${row.file_count})`}
+                      aria-label={`View files (${row.file_count})`}
+                      onClick={() => setFilesFor(row)}
+                    >
+                      <ViewFilesIcon />
+                      <span className="sf-file-count">{row.file_count}</span>
+                    </button>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
+                <td onClick={(event) => event.stopPropagation()}>
+                  {row.deleted_at ? (
+                    <span className="muted">—</span>
+                  ) : (
+                    <label
+                      className={`btn-quiet sf-upload-dl${uploadingDlId === row.id ? " disabled" : ""}`}
+                      title={uploadingDlId === row.id ? "Uploading…" : "Upload delivery note"}
+                      aria-label={uploadingDlId === row.id ? "Uploading delivery note" : "Upload delivery note"}
+                    >
+                      {uploadingDlId === row.id ? <UploadSpinner /> : <UploadIcon />}
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf,.pdf"
+                        hidden
+                        disabled={uploadingDlId === row.id}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0] || null
+                          event.target.value = ""
+                          void uploadDlFile(row, file)
+                        }}
+                      />
+                    </label>
+                  )}
+                </td>
                 <td><Flags legacy={row.legacy} review={row.needs_review} deleted={Boolean(row.deleted_at)} /></td>
               </tr>
             ))}
             {!rows.length ? (
-              <tr><td colSpan={11} className="muted">No rows</td></tr>
+              <tr><td colSpan={13} className="muted">No rows</td></tr>
             ) : null}
           </tbody>
         </table>
@@ -242,7 +321,55 @@ export function CargoPage({ kind }: { kind: Kind }) {
           onDone={async () => { setCreating(false); setEditing(null); await load() }}
         />
       ) : null}
+      {filesFor ? (
+        <ShipmentFilesModal
+          kind={kind}
+          itemId={filesFor.id}
+          shipmentNumber={filesFor.shipment_number}
+          companyName={filesFor.company_name}
+          customerCode={filesFor.customer_code}
+          onClose={() => setFilesFor(null)}
+        />
+      ) : null}
     </main>
+  )
+}
+
+function AiMark() {
+  return (
+    <svg className="ai-mark" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M8 1.2 9.3 6.7 14.8 8 9.3 9.3 8 14.8 6.7 9.3 1.2 8 6.7 6.7 8 1.2Z" />
+    </svg>
+  )
+}
+
+function UploadIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M10 12.5a.75.75 0 0 1-.75-.75V3.56L7.03 5.78a.75.75 0 1 1-1.06-1.06l3.5-3.5a.75.75 0 0 1 1.06 0l3.5 3.5a.75.75 0 1 1-1.06 1.06L10.75 3.56v8.19a.75.75 0 0 1-.75.75Zm-5.5 1a.75.75 0 0 1 .75.75v1.5c0 .69.56 1.25 1.25 1.25h7c.69 0 1.25-.56 1.25-1.25v-1.5a.75.75 0 0 1 1.5 0v1.5A2.75 2.75 0 0 1 13.5 18h-7A2.75 2.75 0 0 1 3.75 15.25v-1.5a.75.75 0 0 1 .75-.75Z"
+      />
+    </svg>
+  )
+}
+
+function ViewFilesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M10 4.5c-3.6 0-6.7 2.2-8 5.5 1.3 3.3 4.4 5.5 8 5.5s6.7-2.2 8-5.5c-1.3-3.3-4.4-5.5-8-5.5Zm0 9.5a4 4 0 1 1 0-8 4 4 0 0 1 0 8Zm0-2.25a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5Z"
+      />
+    </svg>
+  )
+}
+
+function UploadSpinner() {
+  return (
+    <svg className="sf-upload-spin" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeLinecap="round" opacity="0.85" />
+    </svg>
   )
 }
 

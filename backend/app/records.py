@@ -6,9 +6,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import write_audit
+from app.cargo_files import counts_for
 from app.constants import ENTITY_TYPES
 from app.errors import AppError
-from app.models import AirCargo, Company, Customer, ExitRecord, SeaCargo, Supplier, User
+from app.models import AgentRun, AirCargo, Company, Customer, ExitRecord, SeaCargo, Supplier, User
 from app.present import (
     AIR_FIELDS,
     EXIT_FIELDS,
@@ -24,6 +25,7 @@ EXIT_EDIT_FIELDS = [
     "mark",
     "supplier",
     "invoice_no",
+    "invoice_numbers",
     "cartons",
     "date_of_submission",
     "status",
@@ -73,7 +75,64 @@ def _apply_master_inserts(db: Session, result, *, customer_field: str | None, co
         result.values["supplier"] = ensure_named(db, Supplier, "name", result.insert_supplier)
 
 
-def apply_cargo(db: Session, kind: str, result, user: User, request, existing=None):
+def _record_intake_override_run(
+    db: Session,
+    *,
+    kind: str,
+    row_id: int,
+    user: User,
+    intake_check: dict,
+) -> None:
+    overrides = intake_check.get("overrides") or []
+    photos = intake_check.get("photos") or []
+    if not overrides and not photos:
+        return
+    now = datetime.now(timezone.utc)
+    db.add(
+        AgentRun(
+            agent_name="intake.override",
+            status="ok",
+            actor_user_id=user.id,
+            entity_type=ENTITY_TYPES[kind],
+            entity_id=str(row_id),
+            provider="operator",
+            model=None,
+            input_json=intake_check,
+            steps_json=[
+                {
+                    "name": "override",
+                    "at": now.isoformat(),
+                    "output": entry,
+                }
+                for entry in overrides
+            ]
+            or [
+                {
+                    "name": "intake_check",
+                    "at": now.isoformat(),
+                    "output": {
+                        "photo_count": len(photos),
+                        "scale_overridden": bool(intake_check.get("scale_overridden")),
+                        "confirm_weight_gap": bool(intake_check.get("confirm_weight_gap")),
+                    },
+                }
+            ],
+            output_json={
+                "scale_overridden": bool(intake_check.get("scale_overridden")),
+                "confirm_weight_gap": bool(intake_check.get("confirm_weight_gap")),
+                "preferred": intake_check.get("preferred"),
+                "override_count": len(overrides),
+            },
+            error_message=None,
+            error_stack=None,
+            duration_ms=0,
+            started_at=now,
+            finished_at=now,
+        )
+    )
+
+
+def apply_cargo(db: Session, kind: str, result, user: User, request, existing=None, intake_check=None):
     fields = SEA_FIELDS if kind == "sea" else AIR_FIELDS
     model = SeaCargo if kind == "sea" else AirCargo
     now = datetime.now(timezone.utc)
@@ -100,9 +159,20 @@ def apply_cargo(db: Session, kind: str, result, user: User, request, existing=No
         row.updated_by = user.id
     for name in fields:
         setattr(row, name, result.values.get(name))
+    if intake_check and intake_check.get("scale_overridden"):
+        row.needs_review = True
     db.flush()
     after = snapshot(row, fields)
+    after["needs_review"] = row.needs_review
+    if intake_check:
+        after["intake_check"] = intake_check
     changed = diff(before, after, fields)
+    if intake_check:
+        changed = list(changed or [])
+        if "intake_check" not in changed:
+            changed.append("intake_check")
+        if intake_check.get("scale_overridden") and "needs_review" not in changed:
+            changed.append("needs_review")
     if action == "create" or changed:
         write_audit(
             db,
@@ -115,12 +185,22 @@ def apply_cargo(db: Session, kind: str, result, user: User, request, existing=No
             changed=changed,
             request=request,
         )
+    if intake_check:
+        _record_intake_override_run(
+            db,
+            kind=kind,
+            row_id=row.id,
+            user=user,
+            intake_check=intake_check,
+        )
     return row
 
 
 def save_cargo(db: Session, kind: str, data: dict, confirms: dict, user: User, request, existing=None) -> dict:
     fields = SEA_FIELDS if kind == "sea" else AIR_FIELDS
-    merged = merge_input(existing, data, fields)
+    payload = dict(data)
+    intake_check = payload.pop("intake_check", None)
+    merged = merge_input(existing, payload, fields)
     result = validate_cargo(
         db,
         kind,
@@ -131,7 +211,7 @@ def save_cargo(db: Session, kind: str, data: dict, confirms: dict, user: User, r
     )
     if result.field_errors:
         raise AppError(422, result.payload())
-    row = apply_cargo(db, kind, result, user, request, existing)
+    row = apply_cargo(db, kind, result, user, request, existing, intake_check=intake_check)
     db.commit()
     return {"item": cargo_out(row, kind), "warnings": result.warnings}
 
@@ -260,7 +340,11 @@ def list_cargo(
     total = db.scalar(count_stmt) or 0
     stmt = stmt.order_by(model.date_received.is_(None), model.date_received.desc(), model.id.desc())
     rows = db.scalars(stmt.offset(offset).limit(limit)).all()
-    return {"items": [cargo_out(row, kind) for row in rows], "total": total}
+    file_counts = counts_for(db, ENTITY_TYPES[kind], [row.id for row in rows])
+    return {
+        "items": [cargo_out(row, kind, file_count=file_counts.get(row.id, 0)) for row in rows],
+        "total": total,
+    }
 
 
 def list_exit(

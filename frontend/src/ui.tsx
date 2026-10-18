@@ -128,10 +128,13 @@ export function History({ path, legacy }: { path: string; legacy?: boolean }) {
       {rows.map((row) => (
         <article className="history-item" key={row.id}>
           <div><strong>{row.action}</strong> · {row.actor_email || "system"} · {new Date(row.created_at).toLocaleString()}</div>
-          <ul>
+          <ul className="change-list">
             {(row.changed_fields || []).map((change) => (
               <li key={change.field}>
-                {change.field}: {showValue(change.old)} → {showValue(change.new)}
+                <span className="change-field">{change.field}</span>
+                <span className="change-old">{showValue(change.old)}</span>
+                <span className="change-arrow" aria-hidden="true">→</span>
+                <span className="change-new">{showValue(change.new)}</span>
               </li>
             ))}
           </ul>

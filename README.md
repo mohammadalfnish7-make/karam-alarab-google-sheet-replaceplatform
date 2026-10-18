@@ -19,7 +19,14 @@ Open http://localhost.
 
 The first start applies database migrations, creates the admin user when the user table is empty, and imports the workbook if that filename has not been imported yet. Uploaded PDFs and the Postgres data directory are named Docker volumes (`pdf_uploads`, `postgres_data`).
 
-PDF extraction calls Gemini only when `GEMINI_API_KEY` is set (`GEMINI_MODEL` defaults to `gemini-2.5-flash`). Without a key, upload still stores the file and extract returns 503. Nothing is invented in place of a real extraction.
+PDF and intake image reading use a pluggable provider registry (`backend/app/agents/providers/`).
+
+- **anthropic** (default) — Claude via `ANTHROPIC_API_KEY`. Default model `LLM_MODEL=claude-haiku-5-5`. Supports intake photos and PDF extract.
+- Add another provider later by registering a new module under `agents/providers/` and setting `LLM_PROVIDER`.
+
+Multi-file intake uploads call `/api/intake/read-batch` so each image is read in parallel.
+
+Without a working provider key, upload still stores the file and extract returns 503. Nothing is invented in place of a real extraction.
 
 ## VPS
 

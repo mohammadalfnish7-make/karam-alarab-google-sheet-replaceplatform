@@ -1,12 +1,14 @@
-import base64
+import hashlib
 import json
 import re
+import time
+from dataclasses import dataclass
 
-import httpx
-
-from app.config import settings
+from app.agents.llm import generate_content, model_name, provider
+from app.agents.trace import Trace
 from app.constants import AIR_STATUSES, EXIT_STATUSES, SEA_STAGES, SHIPPING_ROUTES
 from app.errors import AppError
+from app.validation import split_invoices
 
 
 def extraction_prompt(target: str, filename: str = "") -> str:
@@ -21,7 +23,10 @@ def extraction_prompt(target: str, filename: str = "") -> str:
         return (
             "Extract every goods row from this PDF into a JSON array. "
             "Return only JSON, no markdown. Each object uses these keys: "
-            "mark, supplier, invoice_no, cartons, date_of_submission, status. "
+            "mark, supplier, invoice_numbers, cartons, date_of_submission, status. "
+            "invoice_numbers is an array of every invoice number printed for that shipment. "
+            "When a company sends more than one invoice, return each number on its own. "
+            "Do not join them into one string. "
             "mark is the TL customer mark as digits only: TL4455, TL-4455, and TL 4455 all become 4455. "
             "Dates are YYYY-MM-DD or null. cartons is an integer count of cartons, CTN, or boxes, not pieces. "
             f"status is one of {EXIT_STATUSES} or null. "
@@ -161,6 +166,22 @@ def normalize_extracted_row(target: str, row, filename: str = ""):
     if target == "exit":
         cleaned["mark"] = _customer_code(row.get("mark"), filename)
         cleaned["cartons"] = _cartons(row.get("cartons"))
+        numbers: list[str] = []
+        raw_numbers = row.get("invoice_numbers")
+        if isinstance(raw_numbers, list):
+            for item in raw_numbers:
+                numbers.extend(split_invoices(_text(item)))
+        numbers.extend(split_invoices(_text(row.get("invoice_no"))))
+        seen: set[str] = set()
+        unique: list[str] = []
+        for number in numbers:
+            key = number.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(number)
+        cleaned["invoice_numbers"] = unique
+        cleaned["invoice_no"] = ", ".join(unique) if unique else None
         return cleaned
 
     no_pallet = _no_pallet(row.get("gross_is_no_pallet"), row.get("gross_weight_kg"))
@@ -195,58 +216,74 @@ def parse_model_json(text: str):
     return data
 
 
-def gemini_extract(pdf_bytes: bytes, target: str, filename: str = "") -> str:
-    if not settings.gemini_api_key.strip():
-        raise AppError(
-            503,
-            {
-                "message": "GEMINI_API_KEY is not configured. The PDF is stored; extraction was not run.",
-                "field_errors": {},
-                "warnings": [],
-            },
-        )
-    model = settings.gemini_model.strip() or "gemini-2.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": extraction_prompt(target, filename)},
-                    {
-                        "inlineData": {
-                            "mimeType": "application/pdf",
-                            "data": base64.b64encode(pdf_bytes).decode("ascii"),
-                        }
-                    },
-                ],
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-            "maxOutputTokens": 8192,
+@dataclass
+class ExtractedPdf:
+    raw_text: str
+    rows: list
+
+
+def run_pdf_extraction(
+    pdf_bytes: bytes,
+    target: str,
+    filename: str = "",
+    *,
+    actor_user_id: int | None = None,
+    document_id: int | None = None,
+) -> ExtractedPdf:
+    prompt = extraction_prompt(target, filename)
+    with Trace(
+        f"pdf.{target}",
+        actor_user_id=actor_user_id,
+        entity_type="pdf_document" if document_id is not None else None,
+        entity_id=str(document_id) if document_id is not None else None,
+        input_json={
+            "target": target,
+            "filename": filename,
+            "byte_size": len(pdf_bytes),
+            "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+            "prompt": prompt,
         },
-    }
-    try:
-        response = httpx.post(
-            url,
-            headers={"x-goog-api-key": settings.gemini_api_key.strip()},
-            json=payload,
-            timeout=120,
+    ) as run:
+        t0 = time.perf_counter()
+        result = generate_content(
+            prompt=prompt,
+            file_bytes=pdf_bytes,
+            mime="application/pdf",
+            max_tokens=8192,
         )
-        response.raise_for_status()
-        body = response.json()
-    except httpx.HTTPError as exc:
-        raise AppError(
-            502,
-            {"message": f"Gemini request failed: {exc}", "field_errors": {}, "warnings": []},
-        ) from exc
-    candidates = body.get("candidates") or []
-    parts = []
-    if candidates:
-        parts = candidates[0].get("content", {}).get("parts") or []
-    text = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict))
-    if not text.strip():
-        return json.dumps(body)
-    return text
+        llm_ms = max(0, int((time.perf_counter() - t0) * 1000))
+        text = result["text"]
+        if not text.strip():
+            text = json.dumps(result["body"])
+        run.step(
+            "llm",
+            input={"max_tokens": 8192, "provider": provider(), "model": model_name()},
+            output={
+                "finish": result["finish"],
+                "text": text,
+                "usage": result.get("usage"),
+                "provider": result.get("provider") or provider(),
+                "model": result.get("model") or model_name(),
+            },
+            duration_ms=llm_ms,
+        )
+        try:
+            t1 = time.perf_counter()
+            parsed = parse_model_json(text)
+            parse_ms = max(0, int((time.perf_counter() - t1) * 1000))
+        except ValueError as exc:
+            run.step("parse", error=str(exc), duration_ms=0)
+            run.pending_output = {"raw_text": text}
+            raise AppError(
+                422,
+                {
+                    "message": "The model did not return JSON rows. The upload is kept.",
+                    "field_errors": {},
+                    "warnings": [],
+                    "raw_text": text,
+                },
+            ) from exc
+        rows = [normalize_extracted_row(target, row, filename) for row in parsed]
+        run.step("parse", output={"row_count": len(rows)}, duration_ms=parse_ms)
+        run.pending_output = {"raw_text": text, "row_count": len(rows)}
+        return ExtractedPdf(raw_text=text, rows=rows)

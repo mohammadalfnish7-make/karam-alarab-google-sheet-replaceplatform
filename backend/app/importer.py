@@ -16,12 +16,15 @@ from sqlalchemy.orm import Session
 
 from app.models import AirCargo, Company, Customer, ExitRecord, ImportBatch, SeaCargo, Supplier
 from app.validation import (
+    bring_date_not_after_today,
     canonical_choice,
     canonical_exit_status,
     canonical_stage,
     excel_serial_to_date,
     looks_real,
+    parse_compact_dmy,
     parse_dmy,
+    split_invoices,
 )
 from app.constants import AIR_STATUSES
 
@@ -212,46 +215,54 @@ def _status(value, kind: str):
     return canon, []
 
 
-def _received(value):
-    if _blank(value):
-        return None, []
+def _as_sheet_date(value):
     if isinstance(value, datetime):
-        return value.date(), []
+        return value.date()
     if isinstance(value, date):
-        return value, []
+        return value
     text = str(value).strip()
     parsed = parse_dmy(text)
     if parsed:
-        return parsed, []
+        return parsed
     try:
-        return date.fromisoformat(text[:10]), []
+        return date.fromisoformat(text[:10])
     except ValueError:
-        return None, [_issue("date_received", "Invalid date", text)]
+        return None
+
+
+def _received(value):
+    if _blank(value):
+        return None, []
+    if isinstance(value, (datetime, date)) or isinstance(value, str):
+        parsed = _as_sheet_date(value)
+        if parsed:
+            return bring_date_not_after_today(parsed), []
+    return None, [_issue("date_received", "Invalid date", value)]
+
+
+def _kept_date(parsed: date | None, raw):
+    if parsed is None:
+        return None, [_issue("date_of_submission", "Invalid date", raw)]
+    return bring_date_not_after_today(parsed), []
 
 
 def _submission(value):
     if _blank(value):
         return None, []
     if isinstance(value, datetime):
-        return value.date(), []
+        return _kept_date(value.date(), value)
     if isinstance(value, date):
-        return value, []
+        return _kept_date(value, value)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        parsed = excel_serial_to_date(int(value))
-        if parsed:
-            return parsed, []
-        return None, [_issue("date_of_submission", "Invalid Excel serial date", value)]
+        return _kept_date(excel_serial_to_date(int(value)), value)
     text = str(value).strip()
     if re.fullmatch(r"\d+", text):
-        parsed = excel_serial_to_date(int(text))
-        if parsed:
-            return parsed, []
-        return None, [_issue("date_of_submission", "Invalid Excel serial date", text)]
-    parsed = parse_dmy(text)
+        return _kept_date(excel_serial_to_date(int(text)), text)
+    parsed = parse_dmy(text) or parse_compact_dmy(text)
     if parsed:
-        return parsed, []
+        return _kept_date(parsed, text)
     try:
-        return date.fromisoformat(text[:10]), []
+        return _kept_date(date.fromisoformat(text[:10]), text)
     except ValueError:
         return None, [_issue("date_of_submission", "Invalid date", text)]
 
@@ -441,7 +452,9 @@ def import_workbook(db: Session, path: str | Path) -> dict:
             issues = []
             mark, mark_issues, mark_ok = _label(cells[1].value, "mark", cells[1].number_format)
             supplier, supplier_issues, supplier_ok = _label(cells[2].value, "supplier", cells[2].number_format)
-            invoice, invoice_issues, _invoice_ok = _label(cells[3].value, "invoice_no", cells[3].number_format)
+            invoice_text, invoice_issues, _invoice_ok = _label(cells[3].value, "invoice_no", cells[3].number_format)
+            invoice_numbers = split_invoices(invoice_text)
+            invoice = ", ".join(invoice_numbers) if invoice_numbers else None
             cartons, carton_issues = _cartons(cells[4].value, "cartons")
             submitted, date_issues = _submission(cells[5].value)
             status, status_issues = _status(cells[6].value, "exit")
@@ -458,6 +471,7 @@ def import_workbook(db: Session, path: str | Path) -> dict:
                     mark=mark,
                     supplier=supplier,
                     invoice_no=invoice,
+                    invoice_numbers=invoice_numbers,
                     cartons=cartons,
                     date_of_submission=submitted,
                     status=status,
@@ -497,3 +511,80 @@ def import_workbook(db: Session, path: str | Path) -> dict:
         "air": len(air_rows),
         "exit": len(exit_rows),
     }
+
+
+def _date_from_issue(item) -> date | None:
+    if not isinstance(item, dict) or item.get("field") != "date_of_submission":
+        return None
+    raw = item.get("raw")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    parsed = parse_dmy(text) or parse_compact_dmy(text)
+    if parsed:
+        return parsed
+    if re.fullmatch(r"\d+", text):
+        return excel_serial_to_date(int(text))
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def repair_dates_after_today(db: Session) -> dict:
+    """Bring sheet dates that landed after today back to the day and month that were typed."""
+    today = date.today()
+    corrected = 0
+    for model in (SeaCargo, AirCargo):
+        rows = db.scalars(select(model).where(model.date_received.is_not(None), model.date_received > today)).all()
+        for row in rows:
+            fixed = bring_date_not_after_today(row.date_received, today)
+            if fixed != row.date_received and fixed <= today:
+                row.date_received = fixed
+                corrected += 1
+    exit_corrected = 0
+    exits = db.scalars(select(ExitRecord).where(ExitRecord.deleted_at.is_(None))).all()
+    for row in exits:
+        issues = list(row.issues or [])
+        current = row.date_of_submission
+        fixed = bring_date_not_after_today(current, today) if current and current > today else current
+        kept = []
+        filled = fixed
+        for item in issues:
+            recovered = _date_from_issue(item)
+            if recovered and (filled is None or (isinstance(item, dict) and item.get("message") == "Invalid date")):
+                recovered = bring_date_not_after_today(recovered, today)
+                if recovered <= today:
+                    filled = recovered
+                    continue
+            if isinstance(item, dict) and item.get("message") == "Date is after today" and filled and filled <= today:
+                continue
+            kept.append(item)
+        if filled == current and kept == issues:
+            continue
+        row.date_of_submission = filled
+        row.issues = kept
+        row.needs_review = bool(kept)
+        exit_corrected += 1
+    if corrected or exit_corrected:
+        db.commit()
+    return {"received_corrected": corrected, "exit_corrected": exit_corrected}
+
+
+def repair_invoice_numbers(db: Session) -> dict:
+    """Split exit cells that list more than one invoice into invoice_numbers."""
+    rows = db.scalars(select(ExitRecord)).all()
+    changed = 0
+    for row in rows:
+        numbers = split_invoices(row.invoice_no)
+        current = list(row.invoice_numbers or [])
+        if row.invoice_numbers is not None and numbers == current:
+            continue
+        joined = ", ".join(numbers) if numbers else None
+        row.invoice_numbers = numbers
+        if joined != row.invoice_no:
+            row.invoice_no = joined
+        changed += 1
+    if changed:
+        db.commit()
+    return {"invoices_split": changed}

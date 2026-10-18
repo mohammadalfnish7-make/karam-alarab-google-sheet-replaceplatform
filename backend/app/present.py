@@ -72,6 +72,7 @@ EXIT_FIELDS = [
     "mark",
     "supplier",
     "invoice_no",
+    "invoice_numbers",
     "cartons",
     "date_of_submission",
     "status",
@@ -105,7 +106,7 @@ def meta(row: Any) -> dict[str, Any]:
     }
 
 
-def cargo_out(row: Any, kind: str) -> dict[str, Any]:
+def cargo_out(row: Any, kind: str, *, file_count: int | None = None) -> dict[str, Any]:
     data = {
         "id": row.id,
         "legacy": row.legacy,
@@ -120,6 +121,7 @@ def cargo_out(row: Any, kind: str) -> dict[str, Any]:
         "net_weight_kg": num(row.net_weight_kg),
         "system_code": row.system_code,
         "shipment_number": row.shipment_number,
+        "file_count": 0 if file_count is None else file_count,
         **meta(row),
     }
     if kind == "sea":
@@ -140,6 +142,7 @@ def exit_out(row: Any) -> dict[str, Any]:
         "mark": row.mark,
         "supplier": row.supplier,
         "invoice_no": row.invoice_no,
+        "invoice_numbers": list(row.invoice_numbers or []),
         "cartons": row.cartons,
         "date_of_submission": iso(row.date_of_submission),
         "status": row.status,
@@ -160,6 +163,48 @@ def audit_out(row: Any, email: str | None) -> dict[str, Any]:
         "changed_fields": row.changed_fields or [],
         "ip": row.ip,
         "user_agent": row.user_agent,
+        "created_at": iso(row.created_at),
+    }
+
+
+def agent_run_out(row: Any, email: str | None, *, detail: bool = False) -> dict[str, Any]:
+    body = {
+        "id": row.id,
+        "agent_name": row.agent_name,
+        "status": row.status,
+        "provider": row.provider,
+        "model": row.model,
+        "actor_user_id": row.actor_user_id,
+        "actor_email": email,
+        "entity_type": row.entity_type,
+        "entity_id": row.entity_id,
+        "error_message": row.error_message,
+        "step_count": len(row.steps_json or []),
+        "duration_ms": row.duration_ms,
+        "started_at": iso(row.started_at),
+        "finished_at": iso(row.finished_at),
+    }
+    if detail:
+        body["input_json"] = row.input_json
+        body["steps_json"] = row.steps_json or []
+        body["output_json"] = row.output_json
+        body["error_stack"] = row.error_stack
+    return body
+
+
+def request_log_out(row: Any, email: str | None) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "method": row.method,
+        "path": row.path,
+        "query": row.query,
+        "status_code": row.status_code,
+        "duration_ms": row.duration_ms,
+        "actor_user_id": row.actor_user_id,
+        "actor_email": email,
+        "ip": row.ip,
+        "user_agent": row.user_agent,
+        "error_message": row.error_message,
         "created_at": iso(row.created_at),
     }
 

@@ -11,6 +11,8 @@ SEA_STAGES = [
     "delivered to customer✅",
 ]
 
+DEFAULT_SEA_STAGE = "📦 WH"
+
 AIR_STATUSES = [
     "AT AIRPORT",
     "delivered to customer✅",

@@ -11,7 +11,7 @@ from app.constants import ENTITY_TYPES
 from app.deps import get_current_user, get_db
 from app.errors import AppError
 from app.models import PdfDocument, PdfExtraction, User
-from app.pdf_service import gemini_extract, normalize_extracted_row, parse_model_json
+from app.pdf_service import run_pdf_extraction
 from app.present import freeze
 from app.records import apply_cargo, apply_exit
 from app.schemas import PdfConfirm
@@ -139,29 +139,44 @@ def extract_pdf(
     path = Path(document.stored_path)
     if not path.is_file():
         raise AppError(404, {"message": "Stored PDF is missing"})
-    raw_text = gemini_extract(path.read_bytes(), document.target, document.original_filename)
+    try:
+        extracted = run_pdf_extraction(
+            path.read_bytes(),
+            document.target,
+            document.original_filename,
+            actor_user_id=user.id,
+            document_id=document.id,
+        )
+    except AppError as exc:
+        raw_text = exc.body.get("raw_text")
+        if exc.status == 422 and isinstance(raw_text, str):
+            extraction = PdfExtraction(
+                document_id=document.id,
+                raw_response=raw_text,
+                created_by=user.id,
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(extraction)
+            db.commit()
+            raise AppError(
+                422,
+                {
+                    "message": exc.body.get("message"),
+                    "field_errors": {},
+                    "warnings": [],
+                    "extraction_id": extraction.id,
+                },
+            ) from exc
+        raise
     extraction = PdfExtraction(
         document_id=document.id,
-        raw_response=raw_text,
+        raw_response=extracted.raw_text,
         created_by=user.id,
         created_at=datetime.now(timezone.utc),
     )
     db.add(extraction)
     db.flush()
-    try:
-        rows = parse_model_json(raw_text)
-    except ValueError:
-        db.commit()
-        raise AppError(
-            422,
-            {
-                "message": "The model did not return JSON rows. The upload is kept.",
-                "field_errors": {},
-                "warnings": [],
-                "extraction_id": extraction.id,
-            },
-        )
-    rows = [normalize_extracted_row(document.target, row, document.original_filename) for row in rows]
+    rows = extracted.rows
     previews = [_preview(db, document.target, row) for row in rows]
     extraction.parsed_json = previews
     write_audit(
