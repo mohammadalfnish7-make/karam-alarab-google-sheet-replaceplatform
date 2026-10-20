@@ -29,6 +29,16 @@ EXIT_STATUSES = [
 
 SHIPPING_ROUTES = ["IRAN", "TURKEY"]
 
+# Cont Tracker undocumented stage column (Russian "этап" = stage).
+CONTAINER_STAGES = [
+    "этап 1",
+    "этап 2",
+    "этап 3",
+    "этап 4",
+    "этап 5",
+    "этап 6",
+]
+
 ENTITY_TYPES = {
     "sea": "sea_cargo",
     "air": "air_cargo",

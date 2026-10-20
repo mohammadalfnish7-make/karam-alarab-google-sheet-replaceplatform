@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import type { ReactNode } from "react"
-import { api, showValue } from "./api"
+import { api, friendlyAction, normalizeAuditChanges, showValue } from "./api"
 import type { AuditEntry, Issue, Warning } from "./types"
 
 export function Field({
@@ -125,21 +125,30 @@ export function History({ path, legacy }: { path: string; legacy?: boolean }) {
   }
   return (
     <div>
-      {rows.map((row) => (
-        <article className="history-item" key={row.id}>
-          <div><strong>{row.action}</strong> · {row.actor_email || "system"} · {new Date(row.created_at).toLocaleString()}</div>
-          <ul className="change-list">
-            {(row.changed_fields || []).map((change) => (
-              <li key={change.field}>
-                <span className="change-field">{change.field}</span>
-                <span className="change-old">{showValue(change.old)}</span>
-                <span className="change-arrow" aria-hidden="true">→</span>
-                <span className="change-new">{showValue(change.new)}</span>
-              </li>
-            ))}
-          </ul>
-        </article>
-      ))}
+      {rows.map((row) => {
+        const changes = normalizeAuditChanges(row.changed_fields, row.after_json, row.before_json)
+        return (
+          <article className="history-item" key={row.id}>
+            <div>
+              <strong>{friendlyAction(row.action)}</strong>
+              {" · "}
+              {row.actor_email || "system"}
+              {" · "}
+              {new Date(row.created_at).toLocaleString()}
+            </div>
+            <ul className="change-list">
+              {changes.map((change, index) => (
+                <li key={`${change.field}-${index}`}>
+                  <span className="change-field">{change.field}</span>
+                  <span className="change-old">{showValue(change.old)}</span>
+                  <span className="change-arrow" aria-hidden="true">→</span>
+                  <span className="change-new">{showValue(change.new)}</span>
+                </li>
+              ))}
+            </ul>
+          </article>
+        )
+      })}
     </div>
   )
 }

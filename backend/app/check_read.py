@@ -6,30 +6,7 @@ import time
 from app.agents.llm import generate_content, model_name, provider
 from app.agents.trace import Trace
 from app.errors import AppError
-
-NOTE_PROMPT = (
-    "Read this delivery note. Return one JSON object using only values printed on the page. "
-    "Keys: company_name, date, mark, cartons, goods, party. "
-    "company_name is the company that issued the note, usually the heading. "
-    "Do not use the buyer when the buyer is Karam. "
-    "date is YYYY-MM-DD or null. "
-    "mark is the MARK value as printed, including a TL prefix. Do not shorten the digits. "
-    "cartons is the integer carton count from CTN or boxes, not a piece count, or null. "
-    "goods is the goods description or null. "
-    "party is the party or shipper printed on the note, or null. "
-    "Use null when a value is not printed."
-)
-
-SCALE_PROMPT = (
-    "Read this photo of goods on a weighing scale. Return one JSON object using only values you can see. "
-    "Keys: mark, cartons, total_weight_kg, pallet_weight_kg, scale_weight_kg. "
-    "mark is the handwritten TL mark as written. Do not shorten the digits. "
-    "cartons is the handwritten carton count, an integer or null. "
-    "total_weight_kg is the handwritten total weight labeled TW, in kilograms, or null. "
-    "pallet_weight_kg is the handwritten pallet weight labeled PW, in kilograms, or null. "
-    "scale_weight_kg is the number shown on the digital scale display, in kilograms, or null. "
-    "Do not calculate a net weight. Use null when a value is not visible."
-)
+from app.prompt_store import get_active_prompt
 
 _MONTHS = {
     "jan": "01",
@@ -139,7 +116,8 @@ def _object(text: str) -> dict:
 
 
 def read_check_file(file_bytes: bytes, mime: str, kind: str, *, actor_user_id: int | None = None) -> dict:
-    prompt = SCALE_PROMPT if kind == "scale" else NOTE_PROMPT
+    prompt_key = "intake.scale" if kind == "scale" else "intake.note"
+    prompt = get_active_prompt(prompt_key)
     with Trace(
         f"intake.{kind}",
         actor_user_id=actor_user_id,

@@ -6,12 +6,13 @@ from dataclasses import dataclass
 
 from app.agents.llm import generate_content, model_name, provider
 from app.agents.trace import Trace
-from app.constants import AIR_STATUSES, EXIT_STATUSES, SEA_STAGES, SHIPPING_ROUTES
 from app.errors import AppError
+from app.prompt_store import get_active_prompt
 from app.validation import split_invoices
 
 
 def extraction_prompt(target: str, filename: str = "") -> str:
+    body = get_active_prompt(f"pdf.{target}")
     file_note = ""
     if filename.strip():
         file_note = (
@@ -19,65 +20,7 @@ def extraction_prompt(target: str, filename: str = "") -> str:
             "If that name contains TL followed by digits, those digits are the customer mark "
             "when the printed mark is unclear."
         )
-    if target == "exit":
-        return (
-            "Extract every goods row from this PDF into a JSON array. "
-            "Return only JSON, no markdown. Each object uses these keys: "
-            "mark, supplier, invoice_numbers, cartons, date_of_submission, status. "
-            "invoice_numbers is an array of every invoice number printed for that shipment. "
-            "When a company sends more than one invoice, return each number on its own. "
-            "Do not join them into one string. "
-            "mark is the TL customer mark as digits only: TL4455, TL-4455, and TL 4455 all become 4455. "
-            "Dates are YYYY-MM-DD or null. cartons is an integer count of cartons, CTN, or boxes, not pieces. "
-            f"status is one of {EXIT_STATUSES} or null. "
-            "Do not invent a row number. Do not invent rows that are not in the document. "
-            "Use null for missing values."
-            + file_note
-        )
-    cargo = (
-        "This PDF is a supplier file for one shipment. It may contain a delivery note, a packing list, "
-        "and a tax invoice, including scanned pages. Return a JSON array with one object for the whole "
-        "shipment. Do not return one object per product, perfume, or invoice line. "
-        "Return only JSON, no markdown. "
-        "customer_code is the TL mark as digits only. TL4455, TL-4455, and TL 4455 all become 4455. "
-        "Read it from a MARK column or a TL mark printed on the delivery note. "
-        "company_name is the supplier or vendor that issued the document, usually the heading company. "
-        "Do not use the buyer when the buyer is Karam Al Arab or Karam Al Oud. "
-        "cartons is the integer count of cartons, CTN, or boxes. "
-        "A line that says 6 CTN, or boxes numbered BOX-1 through BOX-6, means 6. "
-        "Do not use piece counts such as PCS. "
-        "gross_weight_kg is the total weight in kilograms as a number, without the KG unit. "
-        "If the packing list has one WEIGHT column and a single total, put that total in gross_weight_kg. "
-        "net_weight_kg is the net weight in kilograms only when the document prints net separately from gross. "
-        "If only one weight is printed, net_weight_kg is null. "
-        "If the document says NO PALLET, set gross_is_no_pallet true and gross_weight_kg null. "
-        "Otherwise gross_is_no_pallet is false. "
-        "system_code is printed text that is DL followed by digits, or null. Do not invent a system code. "
-        "date_received is YYYY-MM-DD only when the document labels a received date. "
-        "Do not copy the invoice date or the packing-list date into date_received. "
-        "Use null for anything that is not printed."
-        + file_note
-    )
-    if target == "air":
-        return (
-            cargo
-            + " shipment_number is printed text that is AR followed by digits, or null. "
-            "A supplier invoice number is not a shipment number. "
-            f"status is one of {AIR_STATUSES} or null. "
-            "Each object uses these keys: "
-            "date_received, customer_code, company_name, cartons, gross_weight_kg, "
-            "gross_is_no_pallet, net_weight_kg, system_code, shipment_number, status."
-        )
-    return (
-        cargo
-        + " shipment_number is printed text that is D followed by digits, or null. "
-        "A supplier invoice number is not a shipment number. "
-        f"shipping_route is one of {SHIPPING_ROUTES} or null. "
-        f"stage is one of {SEA_STAGES} or null. "
-        "Each object uses these keys: "
-        "date_received, customer_code, company_name, cartons, gross_weight_kg, "
-        "gross_is_no_pallet, net_weight_kg, system_code, shipment_number, shipping_route, stage."
-    )
+    return body + file_note
 
 
 def _text(value) -> str:

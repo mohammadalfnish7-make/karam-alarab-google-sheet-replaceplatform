@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     excel_import_path: str = ""
     document_expiry_path: str = ""
+    container_tracker_path: str = ""
     testing: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

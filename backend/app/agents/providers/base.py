@@ -12,8 +12,9 @@ class DocumentProvider(Protocol):
         self,
         *,
         prompt: str,
-        file_bytes: bytes,
-        mime: str,
+        file_bytes: bytes | None = None,
+        mime: str | None = None,
+        files: list[tuple[bytes, str]] | None = None,
         max_tokens: int,
         thinking_budget: int | None = None,
     ) -> dict: ...

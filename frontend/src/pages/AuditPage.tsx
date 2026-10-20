@@ -1,9 +1,35 @@
 import { useEffect, useState } from "react"
-import { api, showValue } from "../api"
+import { api, friendlyAction, friendlyEntity, normalizeAuditChanges, showValue } from "../api"
 import type { AuditEntry, Page } from "../types"
 
-const ACTIONS = ["login", "logout", "login_failed", "create", "update", "delete", "restore", "pdf_upload", "pdf_extract", "pdf_confirm"]
-const ENTITIES = ["sea_cargo", "air_cargo", "exit_record", "document_expiry", "pdf_document", "session", "user"]
+const ACTIONS = [
+  "login",
+  "logout",
+  "login_failed",
+  "create",
+  "update",
+  "delete",
+  "restore",
+  "upload_photo",
+  "delete_photo",
+  "restore_photo",
+  "summarize",
+  "pdf_upload",
+  "pdf_extract",
+  "pdf_confirm",
+]
+const ENTITIES = [
+  "sea_cargo",
+  "air_cargo",
+  "exit_record",
+  "container_loading",
+  "expense",
+  "air_shipment_picture",
+  "document_expiry",
+  "pdf_document",
+  "session",
+  "user",
+]
 
 export function AuditPage() {
   const [rows, setRows] = useState<AuditEntry[]>([])
@@ -73,22 +99,32 @@ export function AuditPage() {
               <tr key={row.id}>
                 <td>{new Date(row.created_at).toLocaleString()}</td>
                 <td>{row.actor_email || "—"}</td>
-                <td>{row.action}</td>
-                <td>{row.entity_type || ""} {row.entity_id || ""}</td>
+                <td>{friendlyAction(row.action)}</td>
+                <td>{friendlyEntity(row.entity_type, row.entity_id)}</td>
                 <td className="audit-changes">
-                  <details className="change-log">
-                    <summary>{(row.changed_fields || []).length} fields</summary>
-                    <ul className="change-list">
-                      {(row.changed_fields || []).map((change) => (
-                        <li key={change.field}>
-                          <span className="change-field">{change.field}</span>
-                          <span className="change-old">{showValue(change.old)}</span>
-                          <span className="change-arrow" aria-hidden="true">→</span>
-                          <span className="change-new">{showValue(change.new)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
+                  {(() => {
+                    const changes = normalizeAuditChanges(
+                      row.changed_fields,
+                      row.after_json,
+                      row.before_json,
+                    )
+                    if (!changes.length) return <span className="muted">—</span>
+                    return (
+                      <details className="change-log">
+                        <summary>{changes.length} change{changes.length === 1 ? "" : "s"}</summary>
+                        <ul className="change-list">
+                          {changes.map((change, index) => (
+                            <li key={`${change.field}-${index}`}>
+                              <span className="change-field">{change.field}</span>
+                              <span className="change-old">{showValue(change.old)}</span>
+                              <span className="change-arrow" aria-hidden="true">→</span>
+                              <span className="change-new">{showValue(change.new)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )
+                  })()}
                 </td>
               </tr>
             ))}

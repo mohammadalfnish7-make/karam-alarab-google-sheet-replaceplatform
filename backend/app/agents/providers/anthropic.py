@@ -5,6 +5,7 @@ import httpx
 from app.agents.providers.registry import register
 from app.config import settings
 from app.errors import AppError
+from app.prompt_store import llm_model, llm_timeout_sec
 
 _API = "https://api.anthropic.com/v1/messages"
 _VERSION = "2023-06-01"
@@ -16,14 +17,15 @@ class AnthropicProvider:
     name = "anthropic"
 
     def model_name(self) -> str:
-        return (settings.llm_model or "").strip() or "claude-haiku-5-5"
+        return llm_model()
 
     def generate_content(
         self,
         *,
         prompt: str,
-        file_bytes: bytes,
-        mime: str,
+        file_bytes: bytes | None = None,
+        mime: str | None = None,
+        files: list[tuple[bytes, str]] | None = None,
         max_tokens: int,
         thinking_budget: int | None = None,
     ) -> dict:
@@ -31,16 +33,20 @@ class AnthropicProvider:
         key = settings.anthropic_api_key.strip()
         if not key:
             raise AppError(503, {"message": _MISSING_KEY, "field_errors": {}, "warnings": []})
+        attachments = list(files or [])
+        if not attachments:
+            if file_bytes is None or mime is None:
+                raise AppError(422, {"message": "No files provided for extraction", "field_errors": {}, "warnings": []})
+            attachments = [(file_bytes, mime)]
+        content = [_file_block(data, media) for data, media in attachments]
+        content.append({"type": "text", "text": prompt})
         payload = {
             "model": self.model_name(),
             "max_tokens": max_tokens,
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        _file_block(file_bytes, mime),
-                        {"type": "text", "text": prompt},
-                    ],
+                    "content": content,
                 }
             ],
         }
@@ -53,7 +59,7 @@ class AnthropicProvider:
                     "content-type": "application/json",
                 },
                 json=payload,
-                timeout=settings.llm_timeout_sec,
+                timeout=llm_timeout_sec(),
             )
             response.raise_for_status()
             body = response.json()

@@ -15,8 +15,9 @@ def model_name() -> str:
 def generate_content(
     *,
     prompt: str,
-    file_bytes: bytes,
-    mime: str,
+    file_bytes: bytes | None = None,
+    mime: str | None = None,
+    files: list[tuple[bytes, str]] | None = None,
     max_tokens: int,
     thinking_budget: int | None = None,
 ) -> dict:
@@ -24,6 +25,7 @@ def generate_content(
         prompt=prompt,
         file_bytes=file_bytes,
         mime=mime,
+        files=files,
         max_tokens=max_tokens,
         thinking_budget=thinking_budget,
     )

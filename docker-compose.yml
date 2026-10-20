@@ -24,6 +24,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       EXCEL_IMPORT_PATH: "/excel/WM _NEW  Load Plan.xlsx"
       DOCUMENT_EXPIRY_PATH: ""
+      CONTAINER_TRACKER_PATH: "/excel/Karam Al Arab-Contanier Tracker (1).xlsx"
       UPLOAD_DIR: /data/uploads
     extra_hosts:
       - "host.docker.internal:host-gateway"

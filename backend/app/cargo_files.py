@@ -1,4 +1,4 @@
-"""Store and serve intake evidence files linked to cargo rows."""
+"""Store and serve intake evidence files linked to cargo / container rows."""
 
 from __future__ import annotations
 
@@ -14,7 +14,16 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import AppError
-from app.models import AirCargo, CargoFile, SeaCargo, User
+from app.models import (
+    AirCargo,
+    AirShipmentPicture,
+    CargoFile,
+    ContainerLoading,
+    ContainerRow,
+    Expense,
+    SeaCargo,
+    User,
+)
 
 _MAX_FILE = 15 * 1024 * 1024
 _ALLOWED_MIME = {
@@ -26,10 +35,44 @@ _ALLOWED_MIME = {
     "image/gif": "gif",
 }
 
+CONTAINER_ENTITY = "container_row"
+LOADING_ENTITY = "container_loading"
+EXPENSE_ENTITY = "expense"
+AIR_PICTURE_ENTITY = "air_shipment_picture"
+_LOADING_KINDS = {CONTAINER_ENTITY, LOADING_ENTITY}
+
 
 def require_cargo(db: Session, kind: str, item_id: int, user: User):
     model = SeaCargo if kind == "sea" else AirCargo
     row = db.get(model, item_id)
+    if row is None or (row.deleted_at is not None and user.role != "admin"):
+        raise AppError(404, {"message": "Not found"})
+    return row
+
+
+def require_container(db: Session, item_id: int, user: User) -> ContainerRow:
+    row = db.get(ContainerRow, item_id)
+    if row is None or (row.deleted_at is not None and user.role != "admin"):
+        raise AppError(404, {"message": "Not found"})
+    return row
+
+
+def require_loading(db: Session, item_id: int, user: User) -> ContainerLoading:
+    row = db.get(ContainerLoading, item_id)
+    if row is None or (row.deleted_at is not None and user.role != "admin"):
+        raise AppError(404, {"message": "Not found"})
+    return row
+
+
+def require_expense(db: Session, item_id: int, user: User) -> Expense:
+    row = db.get(Expense, item_id)
+    if row is None or (row.deleted_at is not None and user.role != "admin"):
+        raise AppError(404, {"message": "Not found"})
+    return row
+
+
+def require_air_picture(db: Session, item_id: int, user: User) -> AirShipmentPicture:
+    row = db.get(AirShipmentPicture, item_id)
     if row is None or (row.deleted_at is not None and user.role != "admin"):
         raise AppError(404, {"message": "Not found"})
     return row
@@ -70,6 +113,8 @@ def file_out(row: CargoFile) -> dict[str, Any]:
         "byte_size": row.byte_size,
         "extracted": row.extracted_json,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
+        "deleted_by": row.deleted_by,
         "is_image": row.mime.startswith("image/"),
         "is_pdf": row.mime == "application/pdf",
     }
@@ -81,18 +126,31 @@ def counts_for(db: Session, entity_type: str, entity_ids: list[int]) -> dict[int
     keys = [str(item_id) for item_id in entity_ids]
     rows = db.execute(
         select(CargoFile.entity_id, func.count())
-        .where(CargoFile.entity_type == entity_type, CargoFile.entity_id.in_(keys))
+        .where(
+            CargoFile.entity_type == entity_type,
+            CargoFile.entity_id.in_(keys),
+            CargoFile.deleted_at.is_(None),
+        )
         .group_by(CargoFile.entity_id)
     ).all()
     return {int(entity_id): int(count) for entity_id, count in rows}
 
 
-def list_files(db: Session, entity_type: str, entity_id: int) -> list[dict]:
-    rows = db.scalars(
+def list_files(
+    db: Session,
+    entity_type: str,
+    entity_id: int,
+    *,
+    include_deleted: bool = False,
+) -> list[dict]:
+    stmt = (
         select(CargoFile)
         .where(CargoFile.entity_type == entity_type, CargoFile.entity_id == str(entity_id))
         .order_by(CargoFile.id.asc())
-    ).all()
+    )
+    if not include_deleted:
+        stmt = stmt.where(CargoFile.deleted_at.is_(None))
+    rows = db.scalars(stmt).all()
     return [file_out(row) for row in rows]
 
 
@@ -110,6 +168,23 @@ def get_file(db: Session, entity_type: str, entity_id: int, file_id: int) -> Car
     return row
 
 
+def _validate_kind(entity_type: str, kind: str) -> None:
+    if entity_type in _LOADING_KINDS:
+        if kind != "loading":
+            raise AppError(422, {"message": "Container loading file kind must be loading"})
+        return
+    if entity_type == EXPENSE_ENTITY:
+        if kind != "receipt":
+            raise AppError(422, {"message": "Expense file kind must be receipt"})
+        return
+    if entity_type == AIR_PICTURE_ENTITY:
+        if kind != "photo":
+            raise AppError(422, {"message": "Air shipment picture file kind must be photo"})
+        return
+    if kind not in {"note", "scale"}:
+        raise AppError(422, {"message": "File kind must be note or scale"})
+
+
 def store_file(
     db: Session,
     *,
@@ -123,8 +198,7 @@ def store_file(
     extracted: Any | None,
     user: User,
 ) -> CargoFile:
-    if kind not in {"note", "scale"}:
-        raise AppError(422, {"message": "File kind must be note or scale"})
+    _validate_kind(entity_type, kind)
     if not content:
         raise AppError(422, {"message": f"{filename or 'file'} is empty"})
     if len(content) > _MAX_FILE:
@@ -150,6 +224,24 @@ def store_file(
         created_at=datetime.now(timezone.utc),
     )
     db.add(row)
+    db.flush()
+    return row
+
+
+def soft_delete_file(db: Session, row: CargoFile, user: User) -> CargoFile:
+    if row.deleted_at is not None:
+        raise AppError(422, {"message": "File is already deleted"})
+    row.deleted_at = datetime.now(timezone.utc)
+    row.deleted_by = user.id
+    db.flush()
+    return row
+
+
+def restore_file(db: Session, row: CargoFile) -> CargoFile:
+    if row.deleted_at is None:
+        raise AppError(422, {"message": "File is not deleted"})
+    row.deleted_at = None
+    row.deleted_by = None
     db.flush()
     return row
 

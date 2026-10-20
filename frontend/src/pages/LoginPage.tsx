@@ -31,12 +31,9 @@ export function LoginPage() {
   return (
     <div className="login-wrap">
       <form className="login-card stack" onSubmit={onSubmit}>
-        <div className="brand">
-          <span className="mark">KA</span>
-          <div>
-            <strong>Karam Al Arab</strong>
-            <small>Load plan</small>
-          </div>
+        <div className="brand brand-login">
+          <img className="logo" src="/karam-logo.svg" alt="Karam Al Arab" />
+          <small>Load plan</small>
         </div>
         <h1>Sign in</h1>
         <p className="muted">Sea, air, and exit records for the warehouse team.</p>

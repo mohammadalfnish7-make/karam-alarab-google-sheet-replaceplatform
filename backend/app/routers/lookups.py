@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.constants import AIR_STATUSES, EXIT_STATUSES, SEA_STAGES, SHIPPING_ROUTES
+from app.constants import AIR_STATUSES, CONTAINER_STAGES, EXIT_STATUSES, SEA_STAGES, SHIPPING_ROUTES
 from app.deps import get_current_user, get_db
 from app.models import Company, Customer, Supplier, User
 from app.records import like_pattern
@@ -74,4 +74,5 @@ def enums(_user: User = Depends(get_current_user)):
         "stages": SEA_STAGES,
         "air_statuses": AIR_STATUSES,
         "exit_statuses": EXIT_STATUSES,
+        "container_stages": CONTAINER_STAGES,
     }

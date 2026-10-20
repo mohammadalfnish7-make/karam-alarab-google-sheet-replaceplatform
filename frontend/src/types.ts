@@ -140,6 +140,7 @@ export type Enums = {
   stages: string[]
   air_statuses: string[]
   exit_statuses: string[]
+  container_stages: string[]
 }
 
 export type SaveResult<T> = { item: T; warnings: Warning[] }
@@ -171,4 +172,36 @@ export type Shipment = {
   shipping_route: string | null
   progress: string | null
   needs_review: boolean
+}
+
+export type AppSettings = {
+  llm_model: string
+  llm_timeout_sec: string
+}
+
+export type PromptSummary = {
+  key: string
+  label: string
+  active_version: number | null
+  latest_version: number | null
+  body: string
+  updated_at: string | null
+}
+
+export type PromptVersionRow = {
+  id: number
+  version: number
+  body: string
+  note: string | null
+  created_by_user_id: number | null
+  created_by_email: string | null
+  created_at: string | null
+  is_active: boolean
+}
+
+export type PromptDetail = {
+  key: string
+  label: string
+  active_version: number | null
+  versions: PromptVersionRow[]
 }
