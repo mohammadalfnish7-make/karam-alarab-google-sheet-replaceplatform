@@ -28,15 +28,24 @@ export function Drawer({
   onClose,
   children,
   footer,
+  wide,
+  className,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
+  wide?: boolean
+  className?: string
 }) {
+  const asideClass = [
+    "drawer",
+    wide ? "drawer-wide" : "",
+    className || "",
+  ].filter(Boolean).join(" ")
   return (
     <div className="drawer-back" onClick={onClose}>
-      <aside className="drawer" onClick={(event) => event.stopPropagation()}>
+      <aside className={asideClass} onClick={(event) => event.stopPropagation()}>
         <header>
           <h2>{title}</h2>
           <button className="btn-quiet" type="button" onClick={onClose}>Close</button>
@@ -220,7 +229,9 @@ export function withCurrent(options: string[], current: string) {
 }
 
 export function grossText(row: { gross_is_no_pallet: boolean; gross_weight_kg: number | null }) {
+  if (row.gross_weight_kg != null) {
+    return row.gross_is_no_pallet ? `${row.gross_weight_kg} · no pallet` : String(row.gross_weight_kg)
+  }
   if (row.gross_is_no_pallet) return "NO PALLET"
-  if (row.gross_weight_kg == null) return ""
-  return String(row.gross_weight_kg)
+  return ""
 }

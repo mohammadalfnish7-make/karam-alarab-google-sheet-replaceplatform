@@ -58,3 +58,31 @@ def test_upload_list_view_and_download_cargo_files(client, tmp_path, monkeypatch
     assert sheet.status_code == 200
     row = next(item for item in sheet.json()["items"] if item["id"] == item_id)
     assert row["file_count"] == 2
+
+    papers = client.post(
+        f"/api/sea/{item_id}/files",
+        files=[
+            ("files", ("papers.pdf", pdf.read_bytes(), "application/pdf")),
+            ("kinds", (None, "papers")),
+            ("labels", (None, "Papers 1")),
+        ],
+    )
+    assert papers.status_code == 200, papers.text
+    papers_id = papers.json()["items"][0]["id"]
+
+    deleted = client.delete(f"/api/sea/{item_id}/files/{papers_id}")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["item"]["deleted_at"]
+
+    listed_after = client.get(f"/api/sea/{item_id}/files")
+    assert listed_after.status_code == 200
+    assert all(item["id"] != papers_id for item in listed_after.json()["items"])
+
+    replaced = client.post(
+        f"/api/sea/{item_id}/files/{file_id}/replace",
+        files={"file": ("scale2.jpg", image.read_bytes(), "image/jpeg")},
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["item"]["id"] != file_id
+    assert replaced.json()["item"]["kind"] == "scale"
+    assert replaced.json()["replaced"]["id"] == file_id

@@ -358,14 +358,13 @@ def resolve_gross(data: dict[str, Any]) -> tuple[float | None, bool, str | None]
     weight, error = parse_number(raw_weight)
     if error:
         return None, False, "Gross weight must be a number or NO PALLET"
-    if no_pallet and weight is not None:
-        return None, True, "Clear the weight when No pallet is set"
+    if weight is not None and weight < 0:
+        return None, False, "Gross weight must be 0 or greater"
+    # No pallet may still carry a gross/scale weight; net is expected to match gross.
     if no_pallet:
-        return None, True, None
+        return weight, True, None
     if weight is None:
         return None, False, None
-    if weight < 0:
-        return None, False, "Gross weight must be 0 or greater"
     return weight, False, None
 
 
@@ -493,8 +492,8 @@ def validate_cargo(
 
     system = as_text(data.get("system_code"))
     if not system:
+        # Optional on create — usually filled later from Zokhar upload.
         values["system_code"] = None
-        warnings.append(warning("SYSTEM_CODE_BLANK", "system_code", "System code is blank"))
     elif re.fullmatch(r"DL[0-9]+", system, flags=re.IGNORECASE):
         values["system_code"] = "DL" + system[2:]
     else:

@@ -465,6 +465,28 @@ class ContainerLoading(Base):
     deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
+class LoadingInvoice(Base):
+    """Invoice / packing list linked to a container loading plan."""
+
+    __tablename__ = "loading_invoices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ref: Mapped[str] = mapped_column(Text, nullable=False)
+    container_loading_id: Mapped[int | None] = mapped_column(
+        ForeignKey("container_loadings.id"), nullable=True
+    )
+    container_no: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invoice_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invoice_json: Mapped[Any | None] = mapped_column(json_type(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
 class Expense(Base):
     """Standalone Qusai expense (amount + currency + notes + receipt photos)."""
 
@@ -502,6 +524,38 @@ class AirShipmentPicture(Base):
     deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
+class ImageInvoice(Base):
+    """Session for building invoice lines from product photos (hand + AI)."""
+
+    __tablename__ = "image_invoices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class ImageInvoiceLine(Base):
+    """One product row on an image invoice; photos live in cargo_files."""
+
+    __tablename__ = "image_invoice_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    image_invoice_id: Mapped[int] = mapped_column(ForeignKey("image_invoices.id"), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    brand_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    barcode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    made_in: Mapped[str | None] = mapped_column(Text, nullable=True)
+    volume: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quantity: Mapped[Any | None] = mapped_column(Numeric(14, 3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 Index("ix_container_rows_inv", ContainerRow.inv_no)
 Index("ix_air_tracker_ref", AirShipmentTrackerRow.ref_no)
 Index("ix_coo_inv", CooRow.inv_number)
@@ -530,3 +584,4 @@ Index(
     postgresql_where=text("deleted_at IS NULL"),
 )
 Index("ix_air_shipment_pictures_date", AirShipmentPicture.date)
+Index("ix_image_invoice_lines_invoice_id", ImageInvoiceLine.image_invoice_id)

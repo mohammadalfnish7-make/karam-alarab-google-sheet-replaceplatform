@@ -27,6 +27,7 @@ from app.container_loading import (
     next_mark,
     restore_row,
     set_plan,
+    update_plan,
     update_row,
 )
 from app.container_loading_extract import (
@@ -35,11 +36,11 @@ from app.container_loading_extract import (
     run_plan_check,
     update_extracted,
 )
-from app.container_loading_plan import parse_loading_plan
+from app.container_loading_plan import normalize_plan_payload, parse_loading_plan
 from app.deps import get_current_user, get_db, require_admin
 from app.errors import AppError
 from app.models import User
-from app.schemas import ContainerLoadingIn
+from app.schemas import ContainerLoadingIn, ContainerLoadingPlanIn
 
 router = APIRouter(prefix="/container-loading", tags=["container-loading"])
 
@@ -88,10 +89,13 @@ def get_item(
     db: Session = Depends(get_db),
 ):
     row = get_row(db, item_id, user)
+    from app.loading_invoices import invoices_for_loading
+
     return {
         "item": loading_out(
             row,
             file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0),
+            invoices=invoices_for_loading(db, row.id),
         )
     }
 
@@ -113,6 +117,22 @@ async def upload_plan(
         raise AppError(422, {"message": "Upload an .xlsx loading plan"})
     plan = parse_loading_plan(content, filename=name)
     return set_plan(db, row, plan, filename=name, user=user, request=request)
+
+
+@router.put("/{item_id}/plan")
+def put_plan(
+    item_id: int,
+    body: ContainerLoadingPlanIn,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = get_row(db, item_id, user)
+    plan = normalize_plan_payload(
+        body.model_dump(),
+        filename=row.plan_filename or "manual",
+    )
+    return update_plan(db, row, plan, user=user, request=request)
 
 
 @router.delete("/{item_id}/plan")

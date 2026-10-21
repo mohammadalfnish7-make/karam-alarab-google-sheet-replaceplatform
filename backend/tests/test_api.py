@@ -115,12 +115,13 @@ def test_bad_stage_rejected(client):
     assert "stage" in response.json()["field_errors"]
 
 
-def test_blank_system_code_warns(client):
+def test_blank_system_code_allowed(client):
     login(client)
     response = client.post("/api/sea", json=sea_payload(system_code=None))
     assert response.status_code == 200, response.text
-    codes = [item["code"] for item in response.json()["warnings"]]
-    assert "SYSTEM_CODE_BLANK" in codes
+    assert response.json()["item"]["system_code"] is None
+    codes = [item["code"] for item in response.json().get("warnings") or []]
+    assert "SYSTEM_CODE_BLANK" not in codes
 
 
 def test_net_exceeds_gross_warns(client):

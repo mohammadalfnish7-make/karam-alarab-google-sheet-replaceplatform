@@ -30,7 +30,10 @@ from app.models import (  # noqa: F401
     DocumentExpiry,
     ExitRecord,
     FlightScheduleRow,
+    ImageInvoice,
+    ImageInvoiceLine,
     ImportBatch,
+    LoadingInvoice,
     PdfDocument,
     PdfExtraction,
     PromptKey,
@@ -49,6 +52,9 @@ from app.routers import (
     container_loading,
     container_tracker,
     expenses,
+    knowledge_graph,
+    image_invoices,
+    loading_invoices,
     expiry,
     intake,
     lookups,
@@ -146,5 +152,8 @@ app.include_router(intake.router, prefix="/api")
 app.include_router(expiry.router, prefix="/api")
 app.include_router(container_tracker.router, prefix="/api")
 app.include_router(container_loading.router, prefix="/api")
+app.include_router(loading_invoices.router, prefix="/api")
+app.include_router(image_invoices.router, prefix="/api")
 app.include_router(expenses.router, prefix="/api")
 app.include_router(air_shipment_pictures.router, prefix="/api")
+app.include_router(knowledge_graph.router, prefix="/api")

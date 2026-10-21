@@ -110,6 +110,48 @@ class ContainerLoadingIn(BaseModel):
         return _blank_to_none(data)
 
 
+class ContainerLoadingPlanIn(BaseModel):
+    """In-app loading plan editor payload (JSON, not Excel)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    container_number: Any = None
+    filename: Any = None
+    lines: list[dict[str, Any]] = []
+
+
+class LoadingInvoiceIn(BaseModel):
+    """Create / patch loading invoice header + link."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ref: Any = None
+    container_loading_id: Any = None
+    container_no: Any = None
+    invoice_date: Any = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def blanks(cls, data):
+        return _blank_to_none(data)
+
+
+class LoadingInvoicePut(BaseModel):
+    """Full invoice save from the in-app editor."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ref: Any = None
+    container_loading_id: Any = None
+    container_no: Any = None
+    invoice_date: Any = None
+    coo_line: Any = None
+    title: Any = None
+    plate_line: Any = None
+    filename: Any = None
+    lines: list[dict[str, Any]] = []
+
+
 class ExpenseIn(BaseModel):
     """Create/update payload for Qusai expenses."""
 
@@ -135,6 +177,49 @@ class AirShipmentPictureIn(BaseModel):
     number: Any = None
     date: Any = None
     cartons: Any = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def blanks(cls, data):
+        return _blank_to_none(data)
+
+
+class ImageInvoiceIn(BaseModel):
+    """Create / patch image invoice header."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: Any = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def blanks(cls, data):
+        return _blank_to_none(data)
+
+
+class ImageInvoiceLinesPut(BaseModel):
+    """Save all product lines from the editor."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    lines: list[dict[str, Any]] = []
+
+
+class ImageInvoiceExtractIn(BaseModel):
+    """Options for model-base extract on a line."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    overwrite: bool = False
+    file_ids: list[int] | None = None
+
+
+class ImageInvoiceExportIn(BaseModel):
+    """Excel export options; filename is the download name (optional .xlsx)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    filename: Any = None
 
     @model_validator(mode="before")
     @classmethod

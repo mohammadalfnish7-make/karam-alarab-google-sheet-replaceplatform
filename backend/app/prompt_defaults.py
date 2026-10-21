@@ -142,6 +142,20 @@ CONTAINER_LOADING_CHECK_PROMPT = (
 )
 
 
+INVOICE_IMAGE_PRODUCT_PROMPT = (
+    "You read one or more photos of the SAME product (different sides of packaging). "
+    "Return only JSON, no markdown, with keys: brand_name, barcode, made_in, volume, quantity. "
+    "brand_name is the product or brand name printed on the packaging. "
+    "barcode is digits from a barcode / EAN / UPC when readable, else null. "
+    "made_in is country of origin (e.g. Made in France, Italy) when printed, else null. "
+    "volume is size/volume text such as 100ml, 50 ML, 1L when printed, else null. "
+    "quantity is a number only when the packaging clearly shows pack quantity (e.g. 12 pcs); "
+    "otherwise null — do not invent quantity. "
+    "Combine evidence across all photos; prefer clear printed text. "
+    "Use null for missing values. Do not invent brand or barcode."
+)
+
+
 PROMPT_CATALOG: dict[str, tuple[str, str]] = {
     "intake.note": ("Intake delivery note", NOTE_PROMPT),
     "intake.scale": ("Intake scale photo", SCALE_PROMPT),
@@ -151,6 +165,7 @@ PROMPT_CATALOG: dict[str, tuple[str, str]] = {
     "expenses.receipt": ("Expense receipt summary", EXPENSE_RECEIPT_PROMPT),
     "container_loading.photo": ("Container loading photo extract", CONTAINER_LOADING_PHOTO_PROMPT),
     "container_loading.check": ("Container loading plan check", CONTAINER_LOADING_CHECK_PROMPT),
+    "invoice_image.product": ("Image invoice product extract", INVOICE_IMAGE_PRODUCT_PROMPT),
 }
 
 APP_SETTING_KEYS = frozenset({"llm_model", "llm_timeout_sec"})

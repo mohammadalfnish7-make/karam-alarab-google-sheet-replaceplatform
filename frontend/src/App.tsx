@@ -8,6 +8,9 @@ import { ContainerLoadingPage } from "./pages/ContainerLoadingPage"
 import { DashboardPage } from "./pages/DashboardPage"
 import { ExpensesPage } from "./pages/ExpensesPage"
 import { ExitPage } from "./pages/ExitPage"
+import { GraphKnowledgePage } from "./pages/GraphKnowledgePage"
+import { ImageInvoicesPage } from "./pages/ImageInvoicesPage"
+import { InvoicesPage } from "./pages/InvoicesPage"
 import { ExpiryPage } from "./pages/ExpiryPage"
 import { LoginPage } from "./pages/LoginPage"
 import { PdfPage } from "./pages/PdfPage"
@@ -43,6 +46,7 @@ function Shell() {
         </div>
         <nav className="nav">
           {user?.role === "admin" ? <NavLink to="/dashboard">Dashboard</NavLink> : null}
+          <NavLink to="/graph-knowledge">Graph knowledge</NavLink>
           <NavLink to="/tracker">Tracker</NavLink>
           <NavLink to="/sea">Sea</NavLink>
           <NavLink to="/air">Air</NavLink>
@@ -50,6 +54,8 @@ function Shell() {
           <NavLink to="/exit">Exit</NavLink>
           <NavLink to="/containers">Containers</NavLink>
           <NavLink to="/container-loading">Container loading</NavLink>
+          <NavLink to="/invoices">Invoices</NavLink>
+          <NavLink to="/image-invoices">Image invoices</NavLink>
           <NavLink to="/expenses">Expenses</NavLink>
           <NavLink to="/air-tracker">Air tracker</NavLink>
           <NavLink to="/coo">COO</NavLink>
@@ -81,6 +87,7 @@ export function App() {
             <Route element={<Shell />}>
               <Route path="/" element={<Navigate to="/sea" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/graph-knowledge" element={<GraphKnowledgePage />} />
               <Route path="/tracker" element={<TrackerPage />} />
               <Route path="/sea" element={<CargoPage kind="sea" />} />
               <Route path="/air" element={<CargoPage kind="air" />} />
@@ -88,6 +95,8 @@ export function App() {
               <Route path="/exit" element={<ExitPage />} />
               <Route path="/containers" element={<SheetTrackerPage config={CONTAINERS_CONFIG} />} />
               <Route path="/container-loading" element={<ContainerLoadingPage />} />
+              <Route path="/invoices" element={<InvoicesPage />} />
+              <Route path="/image-invoices" element={<ImageInvoicesPage />} />
               <Route path="/expenses" element={<ExpensesPage />} />
               <Route path="/air-tracker" element={<SheetTrackerPage config={AIR_TRACKER_CONFIG} />} />
               <Route path="/coo" element={<SheetTrackerPage config={COO_CONFIG} />} />

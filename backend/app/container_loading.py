@@ -51,7 +51,12 @@ def next_mark(db: Session) -> str:
     return f"CL{highest + 1}"
 
 
-def loading_out(row: ContainerLoading, *, file_count: int = 0) -> dict[str, Any]:
+def loading_out(
+    row: ContainerLoading,
+    *,
+    file_count: int = 0,
+    invoices: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     plan = row.plan_json if isinstance(row.plan_json, dict) else None
     return {
         "id": row.id,
@@ -63,6 +68,7 @@ def loading_out(row: ContainerLoading, *, file_count: int = 0) -> dict[str, Any]
         "plan_line_count": (plan or {}).get("line_count") if plan else 0,
         "check": row.check_json,
         "summary": row.summary_json,
+        "invoices": invoices if invoices is not None else [],
         "file_count": file_count,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "created_by": row.created_by,
@@ -78,6 +84,12 @@ def get_row(db: Session, item_id: int, user: User) -> ContainerLoading:
     if row is None or (row.deleted_at is not None and user.role != "admin"):
         raise AppError(404, {"message": "Not found"})
     return row
+
+
+def _loading_with_invoices(db: Session, row: ContainerLoading, *, file_count: int = 0) -> dict[str, Any]:
+    from app.loading_invoices import invoices_for_loading
+
+    return loading_out(row, file_count=file_count, invoices=invoices_for_loading(db, row.id))
 
 
 def _normalize_mark(raw: Any) -> str:
@@ -119,10 +131,19 @@ def list_rows(
         stmt = stmt.where(filt)
         count_stmt = count_stmt.where(filt)
     total = db.scalar(count_stmt) or 0
-    rows = db.scalars(stmt.order_by(ContainerLoading.id.desc()).offset(offset).limit(limit)).all()
+    rows = list(db.scalars(stmt.order_by(ContainerLoading.id.desc()).offset(offset).limit(limit)).all())
     counts = counts_for(db, LOADING_ENTITY, [row.id for row in rows])
+    from app.loading_invoices import invoices_for_loading
+
     return {
-        "items": [loading_out(row, file_count=counts.get(row.id, 0)) for row in rows],
+        "items": [
+            loading_out(
+                row,
+                file_count=counts.get(row.id, 0),
+                invoices=invoices_for_loading(db, row.id),
+            )
+            for row in rows
+        ],
         "total": total,
     }
 
@@ -157,7 +178,7 @@ def create_row(db: Session, body: dict[str, Any], user: User, request) -> dict[s
     )
     db.commit()
     db.refresh(row)
-    return {"item": loading_out(row)}
+    return {"item": _loading_with_invoices(db, row)}
 
 
 def update_row(db: Session, row: ContainerLoading, body: dict[str, Any], user: User, request) -> dict[str, Any]:
@@ -189,13 +210,17 @@ def update_row(db: Session, row: ContainerLoading, body: dict[str, Any], user: U
     )
     db.commit()
     db.refresh(row)
-    return {"item": loading_out(row, file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0))}
+    return {
+        "item": _loading_with_invoices(
+            db, row, file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0)
+        )
+    }
 
 
 def delete_row(db: Session, item_id: int, user: User, request) -> dict[str, Any]:
     row = get_row(db, item_id, user)
     mark_deleted(db, row, user, request, ENTITY, FIELDS)
-    return {"item": loading_out(row)}
+    return {"item": _loading_with_invoices(db, row)}
 
 
 def restore_row(db: Session, item_id: int, user: User, request) -> dict[str, Any]:
@@ -205,7 +230,7 @@ def restore_row(db: Session, item_id: int, user: User, request) -> dict[str, Any
     if row.mark and _mark_taken(db, row.mark, exclude_id=row.id):
         raise AppError(422, {"field_errors": {"mark": "Mark already exists"}})
     mark_restored(db, row, user, request, ENTITY, FIELDS)
-    return {"item": loading_out(row)}
+    return {"item": _loading_with_invoices(db, row)}
 
 
 def set_plan(
@@ -216,12 +241,13 @@ def set_plan(
     filename: str | None,
     user: User,
     request,
+    action: str = "upload_plan",
 ) -> dict[str, Any]:
     if row.deleted_at is not None:
         raise AppError(400, {"message": "Cannot update a deleted row"})
     before = snapshot(row, FIELDS)
     row.plan_json = plan
-    row.plan_filename = filename
+    row.plan_filename = filename or row.plan_filename or "manual"
     row.check_json = None
     if not row.container_no and plan.get("container_number"):
         row.container_no = str(plan["container_number"]).strip()
@@ -232,7 +258,7 @@ def set_plan(
     write_audit(
         db,
         actor_user_id=user.id,
-        action="upload_plan",
+        action=action,
         entity_type=ENTITY,
         entity_id=row.id,
         before=before,
@@ -241,7 +267,7 @@ def set_plan(
             {
                 "field": "plan",
                 "old": None,
-                "new": f"{filename or 'plan.xlsx'} ({plan.get('line_count') or 0} lines)",
+                "new": f"{row.plan_filename} ({plan.get('line_count') or 0} lines)",
             }
         ],
         request=request,
@@ -249,11 +275,30 @@ def set_plan(
     db.commit()
     db.refresh(row)
     return {
-        "item": loading_out(
-            row,
-            file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0),
+        "item": _loading_with_invoices(
+            db, row, file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0)
         )
     }
+
+
+def update_plan(
+    db: Session,
+    row: ContainerLoading,
+    plan: dict[str, Any],
+    *,
+    user: User,
+    request,
+) -> dict[str, Any]:
+    filename = plan.get("filename") or row.plan_filename or "manual"
+    return set_plan(
+        db,
+        row,
+        plan,
+        filename=str(filename),
+        user=user,
+        request=request,
+        action="update_plan",
+    )
 
 
 def clear_plan(db: Session, row: ContainerLoading, user: User, request) -> dict[str, Any]:
@@ -281,8 +326,7 @@ def clear_plan(db: Session, row: ContainerLoading, user: User, request) -> dict[
     db.commit()
     db.refresh(row)
     return {
-        "item": loading_out(
-            row,
-            file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0),
+        "item": _loading_with_invoices(
+            db, row, file_count=counts_for(db, LOADING_ENTITY, [row.id]).get(row.id, 0)
         )
     }

@@ -15,7 +15,7 @@ export type CargoFileMeta = {
   is_pdf: boolean
 }
 
-type FileTab = "dl" | "delivery_note" | "scale"
+type FileTab = "dl" | "delivery_note" | "papers" | "scale"
 
 type Props = {
   kind: "sea" | "air"
@@ -29,6 +29,7 @@ type Props = {
 const TABS: Array<{ id: FileTab; label: string }> = [
   { id: "dl", label: "DL" },
   { id: "delivery_note", label: "Delivery note" },
+  { id: "papers", label: "Papers" },
   { id: "scale", label: "Scale" },
 ]
 
@@ -44,6 +45,7 @@ function isIntakeNote(file: CargoFileMeta) {
 function tabFiles(files: CargoFileMeta[], tab: FileTab) {
   if (tab === "dl") return files.filter(isDlNote)
   if (tab === "delivery_note") return files.filter(isIntakeNote)
+  if (tab === "papers") return files.filter((file) => file.kind === "papers")
   return files.filter((file) => file.kind === "scale")
 }
 
@@ -87,6 +89,7 @@ export function ShipmentFilesModal({
     () => ({
       dl: tabFiles(files, "dl").length,
       delivery_note: tabFiles(files, "delivery_note").length,
+      papers: tabFiles(files, "papers").length,
       scale: tabFiles(files, "scale").length,
     }),
     [files],

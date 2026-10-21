@@ -12,6 +12,8 @@ from app.cargo_files import (
     list_files,
     parse_extracted,
     require_cargo,
+    restore_file,
+    soft_delete_file,
     store_file,
 )
 from app.constants import ENTITY_TYPES
@@ -134,11 +136,13 @@ def register_cargo(kind: str) -> None:
     @router.get(f"/{kind}/{{item_id}}/files", operation_id=f"list_{kind}_files")
     def list_item_files(
         item_id: int,
+        include_deleted: bool = False,
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ):
         require_cargo(db, kind, item_id, user)
-        return {"items": list_files(db, entity, item_id)}
+        show_deleted = include_deleted and user.role == "admin"
+        return {"items": list_files(db, entity, item_id, include_deleted=show_deleted)}
 
     @router.post(f"/{kind}/{{item_id}}/files", operation_id=f"upload_{kind}_files")
     async def upload_item_files(
@@ -156,19 +160,25 @@ def register_cargo(kind: str) -> None:
         if not uploads:
             raise AppError(422, {"message": "Upload at least one file"})
         if len(kind_tags) != len(uploads):
-            raise AppError(422, {"message": "Each file needs a kind (note or scale)"})
+            raise AppError(422, {"message": "Each file needs a kind (note, scale, or papers)"})
         stored = []
         for index, upload in enumerate(uploads):
             content = await upload.read()
             label = labels[index] if index < len(labels) else ""
+            tag = kind_tags[index]
             if not label:
-                label = f"{'Note' if kind_tags[index] == 'note' else 'Scale'} {index + 1}"
+                if tag == "scale":
+                    label = f"Scale {index + 1}"
+                elif tag == "papers":
+                    label = f"Papers {index + 1}"
+                else:
+                    label = f"Note {index + 1}"
             raw_extracted = extracted_list[index] if index < len(extracted_list) else None
             row = store_file(
                 db,
                 entity_type=entity,
                 entity_id=item_id,
-                kind=kind_tags[index],
+                kind=tag,
                 label=label,
                 filename=getattr(upload, "filename", None) or f"file-{index + 1}",
                 content=content,
@@ -200,6 +210,8 @@ def register_cargo(kind: str) -> None:
     ):
         require_cargo(db, kind, item_id, user)
         row = get_file(db, entity, item_id, file_id)
+        if row.deleted_at is not None and user.role != "admin":
+            raise AppError(404, {"message": "File not found"})
         return FileResponse(
             path=Path(row.stored_path),
             media_type=row.mime,
@@ -216,12 +228,117 @@ def register_cargo(kind: str) -> None:
     ):
         require_cargo(db, kind, item_id, user)
         row = get_file(db, entity, item_id, file_id)
+        if row.deleted_at is not None and user.role != "admin":
+            raise AppError(404, {"message": "File not found"})
         return FileResponse(
             path=Path(row.stored_path),
             media_type=row.mime,
             filename=row.original_filename,
             content_disposition_type="attachment",
         )
+
+    @router.delete(f"/{kind}/{{item_id}}/files/{{file_id}}", operation_id=f"delete_{kind}_file")
+    def delete_item_file(
+        item_id: int,
+        file_id: int,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        require_cargo(db, kind, item_id, user)
+        row = get_file(db, entity, item_id, file_id)
+        before = file_out(row)
+        soft_delete_file(db, row, user)
+        write_audit(
+            db,
+            actor_user_id=user.id,
+            action="cargo_files_delete",
+            entity_type=entity,
+            entity_id=item_id,
+            before=before,
+            after=file_out(row),
+            changed=["files"],
+            request=request,
+        )
+        db.commit()
+        return {"item": file_out(row)}
+
+    @router.post(f"/{kind}/{{item_id}}/files/{{file_id}}/restore", operation_id=f"restore_{kind}_file")
+    def restore_item_file(
+        item_id: int,
+        file_id: int,
+        request: Request,
+        admin: User = Depends(require_admin),
+        db: Session = Depends(get_db),
+    ):
+        require_cargo(db, kind, item_id, admin)
+        row = get_file(db, entity, item_id, file_id)
+        before = file_out(row)
+        restore_file(db, row)
+        after = file_out(row)
+        write_audit(
+            db,
+            actor_user_id=admin.id,
+            action="cargo_files_restore",
+            entity_type=entity,
+            entity_id=item_id,
+            before=before,
+            after=after,
+            changed=["files"],
+            request=request,
+        )
+        db.commit()
+        return {"item": after}
+
+    @router.post(f"/{kind}/{{item_id}}/files/{{file_id}}/replace", operation_id=f"replace_{kind}_file")
+    async def replace_item_file(
+        item_id: int,
+        file_id: int,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        """Soft-delete the current file and upload a replacement in one step."""
+        require_cargo(db, kind, item_id, user)
+        old = get_file(db, entity, item_id, file_id)
+        if old.deleted_at is not None:
+            raise AppError(422, {"message": "Cannot replace a deleted file"})
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise AppError(422, {"message": "Upload a replacement file"})
+        content = await upload.read()
+        before = file_out(old)
+        soft_delete_file(db, old, user)
+        new_row = store_file(
+            db,
+            entity_type=entity,
+            entity_id=item_id,
+            kind=old.kind,
+            label=old.label,
+            filename=getattr(upload, "filename", None) or old.original_filename,
+            content=content,
+            mime=getattr(upload, "content_type", None),
+            extracted=old.extracted_json,
+            user=user,
+        )
+        after = file_out(new_row)
+        write_audit(
+            db,
+            actor_user_id=user.id,
+            action="cargo_files_replace",
+            entity_type=entity,
+            entity_id=item_id,
+            before=before,
+            after={
+                "replaced": before,
+                "file": {"id": new_row.id, "kind": new_row.kind, "filename": new_row.original_filename},
+            },
+            changed=["files"],
+            request=request,
+        )
+        db.commit()
+        return {"item": after, "replaced": before}
 
 
 @router.get("/sea/next-shipment", operation_id="next_sea_shipment")

@@ -1,6 +1,7 @@
-import { FormEvent, useCallback, useEffect, useState } from "react"
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { api, readError } from "../api"
 import { useAuth } from "../auth"
+import { CargoEvidencePanel } from "../components/CargoEvidencePanel"
 import { ShipmentFilesModal } from "../components/ShipmentFilesModal"
 import type { Cargo, Enums, Page, SaveResult, Warning } from "../types"
 import { IntakePage } from "./IntakePage"
@@ -27,6 +28,7 @@ type FormState = {
   company_name: string
   cartons: string
   gross_weight_kg: string
+  pallet_weight_kg: string
   gross_is_no_pallet: boolean
   net_weight_kg: string
   system_code: string
@@ -36,12 +38,39 @@ type FormState = {
   status: string
 }
 
+function parseKg(value: string): number | null {
+  if (!value.trim()) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function formatKg(value: number): string {
+  const rounded = Math.round(value * 1000) / 1000
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded)
+}
+
+/** Net = gross when no pallet; otherwise gross − pallet when both are set. */
+function autoNetKg(gross: string, pallet: string, noPallet: boolean): string | null {
+  const g = parseKg(gross)
+  if (g == null) return null
+  if (noPallet) return formatKg(g)
+  const p = parseKg(pallet)
+  if (p == null) return null
+  return formatKg(g - p)
+}
+
+function palletFromGrossNet(gross: number | null, net: number | null, noPallet: boolean): string {
+  if (noPallet || gross == null || net == null) return ""
+  return formatKg(gross - net)
+}
+
 const emptyForm = (): FormState => ({
   date_received: "",
   customer_code: "",
   company_name: "",
   cartons: "",
   gross_weight_kg: "",
+  pallet_weight_kg: "",
   gross_is_no_pallet: false,
   net_weight_kg: "",
   system_code: "",
@@ -52,12 +81,19 @@ const emptyForm = (): FormState => ({
 })
 
 function fromRow(row: Cargo): FormState {
+  const gross = row.gross_weight_kg == null ? null : Number(row.gross_weight_kg)
+  const net = row.net_weight_kg == null ? null : Number(row.net_weight_kg)
   return {
     date_received: row.date_received ?? "",
     customer_code: row.customer_code ?? "",
     company_name: row.company_name ?? "",
     cartons: row.cartons == null ? "" : String(row.cartons),
     gross_weight_kg: row.gross_weight_kg == null ? "" : String(row.gross_weight_kg),
+    pallet_weight_kg: palletFromGrossNet(
+      Number.isFinite(gross as number) ? gross : null,
+      Number.isFinite(net as number) ? net : null,
+      row.gross_is_no_pallet,
+    ),
     gross_is_no_pallet: row.gross_is_no_pallet,
     net_weight_kg: row.net_weight_kg == null ? "" : String(row.net_weight_kg),
     system_code: row.system_code ?? "",
@@ -93,6 +129,50 @@ function numberOrNull(value: string) {
   return Number.isFinite(parsed) ? parsed : value
 }
 
+function draftStorageKey(kind: Kind) {
+  return `karam.cargo.addDraft.${kind}`
+}
+
+function formHasDraft(form: FormState) {
+  return Object.entries(form).some(([key, value]) => {
+    if (key === "gross_is_no_pallet") return value === true
+    if (key === "stage" && value === "📦 WH") return false
+    if (key === "pallet_weight_kg") return typeof value === "string" && value.trim() !== ""
+    return typeof value === "string" ? value.trim() !== "" : Boolean(value)
+  })
+}
+
+function readAddDraft(kind: Kind): FormState | null {
+  try {
+    const raw = sessionStorage.getItem(draftStorageKey(kind))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<FormState>
+    return { ...emptyForm(), ...parsed, shipment_number: shipmentInputValue(kind, parsed.shipment_number ?? "") }
+  } catch {
+    return null
+  }
+}
+
+function writeAddDraft(kind: Kind, form: FormState) {
+  try {
+    if (!formHasDraft(form)) {
+      sessionStorage.removeItem(draftStorageKey(kind))
+      return
+    }
+    sessionStorage.setItem(draftStorageKey(kind), JSON.stringify(form))
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function clearAddDraft(kind: Kind) {
+  try {
+    sessionStorage.removeItem(draftStorageKey(kind))
+  } catch {
+    /* ignore */
+  }
+}
+
 export function CargoPage({ kind }: { kind: Kind }) {
   const { user } = useAuth()
   const [rows, setRows] = useState<Cargo[]>([])
@@ -101,6 +181,7 @@ export function CargoPage({ kind }: { kind: Kind }) {
   const [draftQ, setDraftQ] = useState("")
   const [q, setQ] = useState("")
   const [filesFor, setFilesFor] = useState<Cargo | null>(null)
+  const [filesTabForId, setFilesTabForId] = useState<number | null>(null)
   const [uploadingDlId, setUploadingDlId] = useState<number | null>(null)
   const [stage, setStage] = useState("")
   const [route, setRoute] = useState("")
@@ -112,7 +193,16 @@ export function CargoPage({ kind }: { kind: Kind }) {
   const [editing, setEditing] = useState<Cargo | null>(null)
   const [creating, setCreating] = useState(false)
   const [extractor, setExtractor] = useState(false)
+  const [hasAddDraft, setHasAddDraft] = useState(() => {
+    const draft = readAddDraft(kind)
+    return Boolean(draft && formHasDraft(draft))
+  })
   const limit = 50
+
+  useEffect(() => {
+    const draft = readAddDraft(kind)
+    setHasAddDraft(Boolean(draft && formHasDraft(draft)))
+  }, [kind, creating])
 
   const loadCustomers = useCallback((query: string) => lookupNames("/api/lookups/customers", "code", query), [])
   const loadCompanies = useCallback((query: string) => lookupNames("/api/lookups/companies", "name", query), [])
@@ -189,7 +279,9 @@ export function CargoPage({ kind }: { kind: Kind }) {
             <AiMark />
             Ai extractor
           </button>
-          <button className="btn" type="button" onClick={openNew}>Add</button>
+          <button className="btn" type="button" onClick={openNew}>
+            Add{hasAddDraft ? " · draft" : ""}
+          </button>
         </div>
       </div>
       <form className="toolbar" onSubmit={(event) => { event.preventDefault(); setQ(draftQ.trim()) }}>
@@ -316,9 +408,34 @@ export function CargoPage({ kind }: { kind: Kind }) {
           canRestore={user?.role === "admin"}
           loadCustomers={loadCustomers}
           loadCompanies={loadCompanies}
-          onClose={() => { setCreating(false); setEditing(null) }}
-          onKeep={async (item) => { setCreating(false); setEditing(item); await load() }}
-          onDone={async () => { setCreating(false); setEditing(null); await load() }}
+          preferFilesTab={filesTabForId != null && editing?.id === filesTabForId}
+          onClose={(draft) => {
+            if (!editing && draft) {
+              writeAddDraft(kind, draft)
+              setHasAddDraft(formHasDraft(draft))
+            }
+            setCreating(false)
+            setEditing(null)
+            setFilesTabForId(null)
+          }}
+          onKeep={async (item, opts) => {
+            if (opts?.openFiles || !editing) {
+              clearAddDraft(kind)
+              setHasAddDraft(false)
+            }
+            setCreating(false)
+            setEditing(item)
+            if (opts?.openFiles) setFilesTabForId(item.id)
+            await load()
+          }}
+          onDone={async () => {
+            clearAddDraft(kind)
+            setHasAddDraft(false)
+            setCreating(false)
+            setEditing(null)
+            setFilesTabForId(null)
+            await load()
+          }}
         />
       ) : null}
       {filesFor ? (
@@ -380,6 +497,7 @@ function CargoDrawer({
   canRestore,
   loadCustomers,
   loadCompanies,
+  preferFilesTab,
   onClose,
   onKeep,
   onDone,
@@ -390,17 +508,24 @@ function CargoDrawer({
   canRestore: boolean
   loadCustomers: (query: string) => Promise<string[]>
   loadCompanies: (query: string) => Promise<string[]>
-  onClose: () => void
-  onKeep: (row: Cargo) => Promise<void>
+  preferFilesTab?: boolean
+  onClose: (draft?: FormState) => void
+  onKeep: (row: Cargo, opts?: { openFiles?: boolean }) => Promise<void>
   onDone: () => Promise<void>
 }) {
-  const [form, setForm] = useState<FormState>(() => formFromRow(kind, row))
+  const [form, setForm] = useState<FormState>(() => {
+    if (row) return formFromRow(kind, row)
+    return readAddDraft(kind) || formFromRow(kind, null)
+  })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [warnings, setWarnings] = useState<Warning[]>([])
   const [proposed, setProposed] = useState<Record<string, string>>({})
-  const [tab, setTab] = useState<"edit" | "history">("edit")
+  const [tab, setTab] = useState<"edit" | "files" | "history">(preferFilesTab ? "files" : "edit")
   const [message, setMessage] = useState("")
   const [nextShipment, setNextShipment] = useState<{ shipment_number: string; number: number } | null>(null)
+  const [savedRow, setSavedRow] = useState<Cargo | null>(row)
+  const formRef = useRef(form)
+  formRef.current = form
 
   useEffect(() => {
     if (kind !== "sea") return
@@ -415,10 +540,37 @@ function CargoDrawer({
     }
   }, [kind])
 
+  useEffect(() => {
+    if (row) return
+    const timer = window.setTimeout(() => writeAddDraft(kind, form), 250)
+    return () => window.clearTimeout(timer)
+  }, [form, kind, row])
+
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((current) => ({ ...current, [key]: value }))
-    setErrors((current) => ({ ...current, [key]: "" }))
+    setForm((current) => {
+      const next = { ...current, [key]: value }
+      if (key === "gross_is_no_pallet" && value === true) {
+        next.pallet_weight_kg = ""
+      }
+      if (key === "gross_weight_kg" || key === "pallet_weight_kg" || key === "gross_is_no_pallet") {
+        const net = autoNetKg(next.gross_weight_kg, next.pallet_weight_kg, next.gross_is_no_pallet)
+        if (net != null) next.net_weight_kg = net
+      }
+      return next
+    })
+    setErrors((current) => {
+      const cleared = { ...current, [key]: "" }
+      if (key === "gross_weight_kg" || key === "pallet_weight_kg" || key === "gross_is_no_pallet") {
+        cleared.net_weight_kg = ""
+      }
+      return cleared
+    })
     setProposed({})
+  }
+
+  function closeDrawer() {
+    if (!row && !savedRow) onClose(formRef.current)
+    else onClose()
   }
 
   async function save(forceNew: boolean) {
@@ -434,9 +586,11 @@ function CargoDrawer({
       customer_code: textOrNull(form.customer_code),
       company_name: textOrNull(form.company_name),
       cartons: numberOrNull(form.cartons),
-      gross_weight_kg: form.gross_is_no_pallet ? null : numberOrNull(form.gross_weight_kg),
+      gross_weight_kg: numberOrNull(form.gross_weight_kg),
       gross_is_no_pallet: form.gross_is_no_pallet,
-      net_weight_kg: numberOrNull(form.net_weight_kg),
+      net_weight_kg: numberOrNull(
+        autoNetKg(form.gross_weight_kg, form.pallet_weight_kg, form.gross_is_no_pallet) ?? form.net_weight_kg,
+      ),
       system_code: textOrNull(form.system_code),
       shipment_number: textOrNull(form.shipment_number),
       shipping_route: kind === "sea" ? textOrNull(form.shipping_route) : null,
@@ -465,18 +619,28 @@ function CargoDrawer({
     setWarnings(body.warnings || [])
     setErrors({})
     setProposed({})
+    setForm(formFromRow(kind, body.item))
+    setSavedRow(body.item)
+    if (!row) {
+      clearAddDraft(kind)
+      setMessage(body.warnings?.length ? "Saved with warnings — add Papers / Scale files" : "Saved — add Papers / Scale files")
+      await onKeep(body.item, { openFiles: true })
+      setTab("files")
+      return
+    }
     if (body.warnings?.length) {
       setMessage("Saved with warnings")
-      setForm(formFromRow(kind, body.item))
       await onKeep(body.item)
       return
     }
     await onDone()
   }
 
+  const activeRow = savedRow || row
+
   async function remove() {
-    if (!row || !window.confirm("Soft-delete this row? It will leave the working list.")) return
-    const response = await api(`/api/${kind}/${row.id}`, { method: "DELETE" })
+    if (!activeRow || !window.confirm("Soft-delete this row? It will leave the working list.")) return
+    const response = await api(`/api/${kind}/${activeRow.id}`, { method: "DELETE" })
     if (!response.ok) {
       const error = await readError(response)
       setMessage(error.message || "Delete failed")
@@ -486,8 +650,8 @@ function CargoDrawer({
   }
 
   async function restore() {
-    if (!row) return
-    const response = await api(`/api/${kind}/${row.id}/restore`, { method: "POST" })
+    if (!activeRow) return
+    const response = await api(`/api/${kind}/${activeRow.id}/restore`, { method: "POST" })
     if (!response.ok) {
       const error = await readError(response)
       setMessage(error.message || "Restore failed")
@@ -502,27 +666,66 @@ function CargoDrawer({
 
   return (
     <Drawer
-      title={row ? `${kind === "sea" ? "Sea" : "Air"} #${row.id}` : `New ${kind} row`}
-      onClose={onClose}
+      title={activeRow ? `${kind === "sea" ? "Sea" : "Air"} #${activeRow.id}` : `New ${kind} row`}
+      onClose={closeDrawer}
+      wide={tab === "files"}
       footer={
-        <>
-          <div>
-            {row && !row.deleted_at ? <button className="btn-danger" type="button" onClick={remove}>Delete</button> : null}
-            {row && row.deleted_at && canRestore ? <button className="btn-quiet" type="button" onClick={restore}>Restore</button> : null}
-          </div>
-          <button className="btn" type="button" onClick={() => save(false)} disabled={Boolean(row?.deleted_at)}>Save</button>
-        </>
+        tab === "files" ? (
+          <button className="btn-quiet" type="button" onClick={closeDrawer}>Close</button>
+        ) : (
+          <>
+            <div>
+              {activeRow && !activeRow.deleted_at ? (
+                <button className="btn-danger" type="button" onClick={remove}>Delete</button>
+              ) : null}
+              {activeRow?.deleted_at && canRestore ? (
+                <button className="btn-quiet" type="button" onClick={restore}>Restore</button>
+              ) : null}
+            </div>
+            <button className="btn" type="button" onClick={() => save(false)} disabled={Boolean(activeRow?.deleted_at)}>
+              Save
+            </button>
+          </>
+        )
       }
     >
-      {row ? (
+      {activeRow ? (
         <div className="tabs">
           <button type="button" className={tab === "edit" ? "on" : ""} onClick={() => setTab("edit")}>Edit</button>
+          <button type="button" className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>
+            Papers &amp; scale
+          </button>
           <button type="button" className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>History</button>
         </div>
+      ) : (
+        <p className="muted">
+          Save the row first, then you can upload Papers and Scale files.
+          {formHasDraft(form) ? " Your typed fields are kept if you close this window." : ""}
+        </p>
+      )}
+      {tab === "files" && activeRow ? (
+        <CargoEvidencePanel
+          kind={kind}
+          itemId={activeRow.id}
+          canRestore={canRestore}
+          disabled={Boolean(activeRow.deleted_at)}
+          onChanged={() => void onKeep(activeRow)}
+        />
       ) : null}
-      {tab === "history" && row ? <History path={`/api/${kind}/${row.id}/history`} legacy={row.legacy} /> : (
+      {tab === "history" && activeRow ? (
+        <History path={`/api/${kind}/${activeRow.id}/history`} legacy={activeRow.legacy} />
+      ) : null}
+      {tab === "edit" ? (
         <form className="form-grid" onSubmit={(event: FormEvent) => { event.preventDefault(); save(false) }}>
-          {row ? <div className="wide"><Flags legacy={row.legacy} review={row.needs_review} deleted={Boolean(row.deleted_at)} /></div> : null}
+          {activeRow ? (
+            <div className="wide">
+              <Flags
+                legacy={activeRow.legacy}
+                review={activeRow.needs_review}
+                deleted={Boolean(activeRow.deleted_at)}
+              />
+            </div>
+          ) : null}
           {message ? <div className="banner ok wide">{message}</div> : null}
           <WarningList warnings={warnings} />
           {row ? <IssueList issues={row.issues || []} /> : null}
@@ -539,24 +742,47 @@ function CargoDrawer({
             <input className={errors.cartons ? "invalid" : ""} inputMode="numeric" value={form.cartons} onChange={(event) => update("cartons", event.target.value)} />
           </Field>
           <Field label="Gross kg" error={errors.gross_weight_kg}>
-            <input className={errors.gross_weight_kg ? "invalid" : ""} inputMode="decimal" disabled={form.gross_is_no_pallet} value={form.gross_is_no_pallet ? "" : form.gross_weight_kg} onChange={(event) => update("gross_weight_kg", event.target.value)} />
+            <input
+              className={errors.gross_weight_kg ? "invalid" : ""}
+              inputMode="decimal"
+              value={form.gross_weight_kg}
+              onChange={(event) => update("gross_weight_kg", event.target.value)}
+            />
+          </Field>
+          <Field label="Pallet kg (PW)">
+            <input
+              inputMode="decimal"
+              disabled={form.gross_is_no_pallet}
+              value={form.gross_is_no_pallet ? "" : form.pallet_weight_kg}
+              onChange={(event) => update("pallet_weight_kg", event.target.value)}
+              placeholder="Optional"
+            />
+            <small>Net = Gross − Pallet. With No pallet, Net = Gross.</small>
           </Field>
           <label className="check wide">
             <input
               type="checkbox"
               checked={form.gross_is_no_pallet}
-              onChange={(event) => {
-                update("gross_is_no_pallet", event.target.checked)
-                if (event.target.checked) update("gross_weight_kg", "")
-              }}
+              onChange={(event) => update("gross_is_no_pallet", event.target.checked)}
             />
             No pallet
           </label>
-          <Field label="Net kg" error={errors.net_weight_kg}>
-            <input className={errors.net_weight_kg ? "invalid" : ""} inputMode="decimal" value={form.net_weight_kg} onChange={(event) => update("net_weight_kg", event.target.value)} />
+          <Field label="Net kg (auto)" error={errors.net_weight_kg}>
+            <input
+              className={errors.net_weight_kg ? "invalid" : ""}
+              inputMode="decimal"
+              value={form.net_weight_kg}
+              onChange={(event) => update("net_weight_kg", event.target.value)}
+            />
           </Field>
-          <Field label="System code" error={errors.system_code}>
-            <input className={errors.system_code ? "invalid" : ""} value={form.system_code} onChange={(event) => update("system_code", event.target.value)} />
+          <Field label="System code (optional)" error={errors.system_code}>
+            <input
+              className={errors.system_code ? "invalid" : ""}
+              value={form.system_code}
+              onChange={(event) => update("system_code", event.target.value)}
+              placeholder="Filled later from Zokhar"
+            />
+            <small>Not required when adding a row — usually comes from Zokhar upload.</small>
           </Field>
           <Field label="Shipment" error={errors.shipment_number} wide={kind === "sea"}>
             <input
@@ -608,7 +834,7 @@ function CargoDrawer({
             <ConfirmNew proposed={proposed} onConfirm={() => save(true)} />
           </div>
         </form>
-      )}
+      ) : null}
     </Drawer>
   )
 }

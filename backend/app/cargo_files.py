@@ -21,6 +21,7 @@ from app.models import (
     ContainerLoading,
     ContainerRow,
     Expense,
+    ImageInvoiceLine,
     SeaCargo,
     User,
 )
@@ -39,6 +40,7 @@ CONTAINER_ENTITY = "container_row"
 LOADING_ENTITY = "container_loading"
 EXPENSE_ENTITY = "expense"
 AIR_PICTURE_ENTITY = "air_shipment_picture"
+IMAGE_INVOICE_LINE_ENTITY = "image_invoice_line"
 _LOADING_KINDS = {CONTAINER_ENTITY, LOADING_ENTITY}
 
 
@@ -76,6 +78,18 @@ def require_air_picture(db: Session, item_id: int, user: User) -> AirShipmentPic
     if row is None or (row.deleted_at is not None and user.role != "admin"):
         raise AppError(404, {"message": "Not found"})
     return row
+
+
+def require_image_invoice_line(db: Session, line_id: int, user: User) -> ImageInvoiceLine:
+    from app.models import ImageInvoice
+
+    line = db.get(ImageInvoiceLine, line_id)
+    if line is None:
+        raise AppError(404, {"message": "Line not found"})
+    invoice = db.get(ImageInvoice, line.image_invoice_id)
+    if invoice is None or (invoice.deleted_at is not None and user.role != "admin"):
+        raise AppError(404, {"message": "Not found"})
+    return line
 
 
 def detect_mime(content: bytes, filename: str, declared: str | None) -> str:
@@ -181,8 +195,12 @@ def _validate_kind(entity_type: str, kind: str) -> None:
         if kind != "photo":
             raise AppError(422, {"message": "Air shipment picture file kind must be photo"})
         return
-    if kind not in {"note", "scale"}:
-        raise AppError(422, {"message": "File kind must be note or scale"})
+    if entity_type == IMAGE_INVOICE_LINE_ENTITY:
+        if kind != "product":
+            raise AppError(422, {"message": "Image invoice file kind must be product"})
+        return
+    if kind not in {"note", "scale", "papers"}:
+        raise AppError(422, {"message": "File kind must be note, scale, or papers"})
 
 
 def store_file(

@@ -1,8 +1,17 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react"
+import { Link, useSearchParams } from "react-router-dom"
 import { api, readError } from "../api"
 import { useAuth } from "../auth"
+import {
+  emptyPlanLine,
+  planToPallets,
+  sumPlanWeight,
+  type LoadingPlan,
+  type PlanLine,
+} from "../containerPlanLayout"
 import type { Page } from "../types"
 import { Drawer, Field, Flags, Pager } from "../ui"
+import { Container3DView } from "./Container3DView"
 
 type LoadingMark = {
   name: string
@@ -41,9 +50,10 @@ type LoadingRow = {
   file_count?: number
   plan_filename?: string | null
   plan_line_count?: number
-  plan?: { container_number?: string | null; line_count?: number } | null
+  plan?: LoadingPlan
   check?: LoadingCheck | null
   summary?: { mark_count?: number; photo_count?: number } | null
+  invoices?: { id: number; ref: string }[]
   deleted_at?: string | null
 }
 
@@ -74,6 +84,7 @@ const emptyExtract = (): LoadingExtract => ({
 
 export function ContainerLoadingPage() {
   const { user } = useAuth()
+  const [searchParams] = useSearchParams()
   const [rows, setRows] = useState<LoadingRow[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -84,6 +95,7 @@ export function ContainerLoadingPage() {
   const [editing, setEditing] = useState<LoadingRow | null>(null)
   const [creating, setCreating] = useState(false)
   const limit = 50
+  const openId = searchParams.get("id")
 
   const load = useCallback(async () => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
@@ -106,6 +118,18 @@ export function ContainerLoadingPage() {
 
   useEffect(() => { setOffset(0) }, [q, includeDeleted])
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    if (!openId) return
+    const id = Number(openId)
+    if (!Number.isFinite(id)) return
+    void api(`${API}/${id}`).then(async (response) => {
+      if (!response.ok) return
+      const body = (await response.json()) as { item: LoadingRow }
+      setCreating(false)
+      setEditing(body.item)
+    })
+  }, [openId])
 
   return (
     <main className="page">
@@ -227,20 +251,23 @@ function LoadingDrawer({
 }) {
   const [mark, setMark] = useState(row?.mark || "")
   const [containerNo, setContainerNo] = useState(row?.container_no || "")
-  const [tab, setTab] = useState<"edit" | "photos">(row ? "photos" : "edit")
+  const [tab, setTab] = useState<"edit" | "photos" | "plan" | "invoice" | "3d">(row ? "photos" : "edit")
   const [message, setMessage] = useState("")
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [check, setCheck] = useState<LoadingCheck | null>(row?.check || null)
   const [summarizing, setSummarizing] = useState(false)
+  const [plan, setPlan] = useState<LoadingPlan>(row?.plan || null)
   const [planInfo, setPlanInfo] = useState({
     filename: row?.plan_filename || "",
     lineCount: row?.plan_line_count || 0,
   })
+  const invoiceCount = row?.invoices?.length || 0
 
   useEffect(() => {
     setMark(row?.mark || "")
     setContainerNo(row?.container_no || "")
     setCheck(row?.check || null)
+    setPlan(row?.plan || null)
     setPlanInfo({
       filename: row?.plan_filename || "",
       lineCount: row?.plan_line_count || 0,
@@ -342,6 +369,7 @@ function LoadingDrawer({
     <Drawer
       title={row ? `Container loading ${row.mark}` : "New container loading"}
       onClose={onClose}
+      wide={tab === "3d" || tab === "plan" || tab === "invoice"}
       footer={
         tab === "photos" ? (
           <div className="container-loading-actions">
@@ -352,6 +380,8 @@ function LoadingDrawer({
             ) : null}
             <button className="btn-quiet" type="button" onClick={onClose}>Close</button>
           </div>
+        ) : tab === "3d" || tab === "plan" || tab === "invoice" ? (
+          <button className="btn-quiet" type="button" onClick={onClose}>Close</button>
         ) : (
           <>
             <div>
@@ -373,7 +403,36 @@ function LoadingDrawer({
         <div className="tabs">
           <button type="button" className={tab === "edit" ? "on" : ""} onClick={() => setTab("edit")}>Edit</button>
           <button type="button" className={tab === "photos" ? "on" : ""} onClick={() => setTab("photos")}>Photos</button>
+          <button type="button" className={tab === "plan" ? "on" : ""} onClick={() => setTab("plan")}>Plan</button>
+          <button type="button" className={tab === "invoice" ? "on" : ""} onClick={() => setTab("invoice")}>
+            Invoice{invoiceCount ? ` (${invoiceCount})` : ""}
+          </button>
+          <button type="button" className={tab === "3d" ? "on" : ""} onClick={() => setTab("3d")}>3D</button>
         </div>
+      ) : null}
+      {tab === "plan" && row ? (
+        <PlanEditor
+          itemId={row.id}
+          plan={plan}
+          filename={planInfo.filename}
+          disabled={Boolean(row.deleted_at)}
+          onPlanChange={(item) => {
+            setPlan(item.plan || null)
+            setPlanInfo({
+              filename: item.plan_filename || "",
+              lineCount: item.plan_line_count || 0,
+            })
+            setContainerNo(item.container_no || "")
+            setCheck(item.check || null)
+            void onKeep(item)
+          }}
+        />
+      ) : null}
+      {tab === "invoice" && row ? (
+        <LoadingInvoicesPanel loadingId={row.id} linked={row.invoices || []} />
+      ) : null}
+      {tab === "3d" && row ? (
+        <Container3DView plan={plan} label={row.mark} />
       ) : null}
       {tab === "photos" && row ? (
         <>
@@ -384,6 +443,7 @@ function LoadingDrawer({
             planFilename={planInfo.filename}
             planLineCount={planInfo.lineCount}
             onPlanChange={(item) => {
+              setPlan(item.plan || null)
               setPlanInfo({
                 filename: item.plan_filename || "",
                 lineCount: item.plan_line_count || 0,
@@ -395,11 +455,12 @@ function LoadingDrawer({
             onFilesChanged={onFilesChanged}
           />
           {check ? <CheckCard check={check} /> : (
-            <p className="muted">Upload a loading plan and photos, then Extract &amp; check.</p>
+            <p className="muted">Build or upload a loading plan (Plan tab or Excel here), add photos, then Extract &amp; check.</p>
           )}
           {message ? <div className="banner ok">{message}</div> : null}
         </>
-      ) : (
+      ) : null}
+      {tab === "edit" || !row ? (
         <form className="form-grid" onSubmit={(event: FormEvent) => { event.preventDefault(); void save() }}>
           {message ? <div className="banner ok wide">{message}</div> : null}
           <Field label="Mark" error={errors.mark}>
@@ -421,10 +482,555 @@ function LoadingDrawer({
               placeholder="Container number"
             />
           </Field>
+          {row?.invoices?.length ? (
+            <div className="field wide">
+              <span>Linked invoices</span>
+              <p className="muted" style={{ margin: 0 }}>
+                {row.invoices.map((invoice, index) => (
+                  <span key={invoice.id}>
+                    {index ? " · " : null}
+                    <Link to={`/invoices?id=${invoice.id}`}>{invoice.ref}</Link>
+                  </span>
+                ))}
+              </p>
+            </div>
+          ) : null}
         </form>
-      )}
+      ) : null}
     </Drawer>
   )
+}
+
+type LinkedInvoiceLine = {
+  no?: number | null
+  mark?: string | null
+  shop?: string | null
+  description?: string | null
+  coo?: string | null
+  pcs?: number | null
+  hs_code?: string | null
+  type?: string | null
+  cartons?: number | null
+  weight?: number | null
+}
+
+type LinkedInvoiceGroup = {
+  mark?: string | null
+  shop?: string | null
+  cartons?: number | null
+  weight?: number | null
+  line_count?: number
+}
+
+type LinkedInvoiceDetail = {
+  id: number
+  ref: string
+  container_no: string | null
+  invoice_date: string | null
+  filename: string | null
+  line_count?: number
+  group_count?: number
+  total_cartons?: number | null
+  total_weight?: number | null
+  invoice?: {
+    lines?: LinkedInvoiceLine[]
+    groups?: LinkedInvoiceGroup[]
+    title?: string | null
+    plate_line?: string | null
+    coo_line?: string | null
+  }
+}
+
+function formatInvoiceWeight(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—"
+  return Number.isInteger(value) ? String(value) : value.toFixed(2)
+}
+
+function LoadingInvoicesPanel({
+  loadingId,
+  linked,
+}: {
+  loadingId: number
+  linked: { id: number; ref: string }[]
+}) {
+  const [items, setItems] = useState<LinkedInvoiceDetail[]>([])
+  const [activeId, setActiveId] = useState<number | null>(linked[0]?.id ?? null)
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError("")
+    void api(`/api/loading-invoices?container_loading_id=${loadingId}&limit=50`).then(async (response) => {
+      if (cancelled) return
+      if (!response.ok) {
+        setLoading(false)
+        setError("Could not load invoices")
+        return
+      }
+      const body = (await response.json()) as Page<{ id: number }>
+      const ids = body.items.map((item) => item.id)
+      if (!ids.length) {
+        setItems([])
+        setActiveId(null)
+        setLoading(false)
+        return
+      }
+      const details = await Promise.all(
+        ids.map(async (id) => {
+          const detail = await api(`/api/loading-invoices/${id}`)
+          if (!detail.ok) return null
+          const payload = (await detail.json()) as { item: LinkedInvoiceDetail }
+          return payload.item
+        }),
+      )
+      if (cancelled) return
+      const next = details.filter((item): item is LinkedInvoiceDetail => Boolean(item))
+      setItems(next)
+      setActiveId((current) => {
+        if (current && next.some((item) => item.id === current)) return current
+        return next[0]?.id ?? null
+      })
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [loadingId])
+
+  const active = items.find((item) => item.id === activeId) || null
+  const lines = active?.invoice?.lines || []
+  const groups = active?.invoice?.groups || []
+
+  if (loading) return <p className="muted">Loading invoices…</p>
+  if (error) return <div className="banner err">{error}</div>
+  if (!items.length) {
+    return (
+      <div className="container-plan-view">
+        <p className="muted">No invoice linked to this loading yet.</p>
+        <p>
+          <Link className="btn" to="/invoices">Create / link an invoice</Link>
+        </p>
+        {linked.length ? (
+          <p className="muted">
+            Stale links:{" "}
+            {linked.map((invoice, index) => (
+              <span key={invoice.id}>
+                {index ? " · " : null}
+                <Link to={`/invoices?id=${invoice.id}`}>{invoice.ref}</Link>
+              </span>
+            ))}
+          </p>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="container-plan-view">
+      <div className="container-loading-actions">
+        {items.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={item.id === activeId ? "btn" : "btn-quiet"}
+            onClick={() => setActiveId(item.id)}
+          >
+            {item.ref}
+          </button>
+        ))}
+        {active ? (
+          <Link className="btn-quiet" to={`/invoices?id=${active.id}`}>Edit invoice</Link>
+        ) : null}
+      </div>
+
+      {active ? (
+        <>
+          <p className="muted">
+            {active.invoice?.title || active.ref}
+            {active.filename ? ` · ${active.filename}` : ""}
+            {active.invoice_date ? ` · ${active.invoice_date.slice(0, 10)}` : ""}
+            {active.container_no ? ` · cont ${active.container_no}` : ""}
+          </p>
+          {active.invoice?.plate_line ? <p className="muted">{active.invoice.plate_line}</p> : null}
+          {active.invoice?.coo_line ? <p className="muted">{active.invoice.coo_line}</p> : null}
+
+          <div className="container-plan-totals">
+            <div><dt>Lines</dt><dd>{active.line_count ?? lines.length}</dd></div>
+            <div><dt>Groups</dt><dd>{active.group_count ?? groups.length}</dd></div>
+            <div><dt>Cartons</dt><dd>{active.total_cartons ?? "—"}</dd></div>
+            <div><dt>Weight</dt><dd><strong>{formatInvoiceWeight(active.total_weight)}</strong> kg</dd></div>
+          </div>
+
+          {groups.length ? (
+            <div className="table-wrap container-plan-mix-summary">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Mark</th>
+                    <th>Shop</th>
+                    <th>Lines</th>
+                    <th>CTN</th>
+                    <th>kg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groups.map((group, index) => (
+                    <tr key={`${group.mark}-${group.shop}-${index}`}>
+                      <td>{group.mark ?? ""}</td>
+                      <td>{group.shop ?? ""}</td>
+                      <td>{group.line_count ?? ""}</td>
+                      <td>{group.cartons ?? ""}</td>
+                      <td>{formatInvoiceWeight(group.weight)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          <h3 className="container-plan-heading">Invoice lines</h3>
+          <div className="table-wrap">
+            <table className="container-plan-edit-table invoice-lines-table">
+              <thead>
+                <tr>
+                  <th>S.No</th>
+                  <th>Mark</th>
+                  <th>Shop</th>
+                  <th>Description</th>
+                  <th>COO</th>
+                  <th>Pcs</th>
+                  <th>HS code</th>
+                  <th>Type</th>
+                  <th>CTN</th>
+                  <th>Weight</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line, index) => (
+                  <tr key={index}>
+                    <td>{line.no ?? index + 1}</td>
+                    <td>{line.mark ?? ""}</td>
+                    <td>{line.shop ?? ""}</td>
+                    <td>{line.description ?? ""}</td>
+                    <td>{line.coo ?? ""}</td>
+                    <td>{line.pcs ?? ""}</td>
+                    <td>{line.hs_code ?? ""}</td>
+                    <td>{line.type ?? ""}</td>
+                    <td>{line.cartons ?? ""}</td>
+                    <td>{formatInvoiceWeight(line.weight)}</td>
+                  </tr>
+                ))}
+                {!lines.length ? (
+                  <tr><td colSpan={10} className="muted">No lines</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function draftFromPlan(plan: LoadingPlan): PlanLine[] {
+  const lines = plan?.lines
+  if (!lines?.length) return [emptyPlanLine(0)]
+  return lines.map((line, index) => ({
+    no: line.no ?? index + 1,
+    customer_code: line.customer_code ?? "",
+    cust_name: line.cust_name ?? null,
+    mix: typeof line.mix === "number" ? line.mix : 1,
+    name: line.name ?? "",
+    cartons: line.cartons ?? null,
+    weight: line.weight ?? line.total_weight ?? null,
+    pw: line.pw ?? null,
+    total_weight: line.total_weight ?? line.weight ?? null,
+    hidden: line.hidden,
+  }))
+}
+
+function PlanEditor({
+  itemId,
+  plan,
+  filename,
+  disabled,
+  onPlanChange,
+}: {
+  itemId: number
+  plan: LoadingPlan
+  filename: string
+  disabled: boolean
+  onPlanChange: (item: LoadingRow) => void
+}) {
+  const [lines, setLines] = useState<PlanLine[]>(() => draftFromPlan(plan))
+  const [containerNumber, setContainerNumber] = useState(plan?.container_number || "")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [message, setMessage] = useState("")
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    setLines(draftFromPlan(plan))
+    setContainerNumber(plan?.container_number || "")
+    setError("")
+    setMessage("")
+    setFieldErrors({})
+  }, [plan])
+
+  const draftPlan = { lines, container_number: containerNumber || null }
+  const pallets = planToPallets(draftPlan)
+  const totalWeight = sumPlanWeight(draftPlan)
+  const validCount = lines.filter((line) => (line.name || "").trim() && typeof line.mix === "number" && line.mix >= 1).length
+  const warnings = plan?.warnings || []
+  const hiddenCount = plan?.hidden_row_count || lines.filter((r) => r.hidden).length
+
+  function patchLine(index: number, patch: Partial<PlanLine>) {
+    setLines((current) => current.map((line, i) => (i === index ? { ...line, ...patch } : line)))
+    setFieldErrors((current) => {
+      const next = { ...current }
+      for (const key of Object.keys(next)) {
+        if (key.startsWith(`lines.${index}.`)) delete next[key]
+      }
+      return next
+    })
+  }
+
+  function addRow() {
+    setLines((current) => [...current, emptyPlanLine(current.length)])
+  }
+
+  function removeRow(index: number) {
+    setLines((current) => {
+      if (current.length <= 1) return [emptyPlanLine(0)]
+      return current.filter((_, i) => i !== index).map((line, i) => ({ ...line, no: line.no ?? i + 1 }))
+    })
+  }
+
+  async function savePlan() {
+    if (disabled || busy) return
+    const named = lines.filter((line) => (line.name || "").trim())
+    if (!named.length) {
+      setError("Add at least one row with a name and mix")
+      return
+    }
+    setBusy(true)
+    setError("")
+    setMessage("")
+    setFieldErrors({})
+    const response = await api(`${API}/${itemId}/plan`, {
+      method: "PUT",
+      body: JSON.stringify({
+        container_number: containerNumber.trim() || null,
+        lines: lines.map((line, index) => ({
+          no: line.no ?? index + 1,
+          customer_code: (line.customer_code || "").toString().trim() || null,
+          cust_name: line.cust_name || null,
+          mix: line.mix,
+          name: (line.name || "").trim(),
+          cartons: line.cartons,
+          weight: line.weight,
+          pw: line.pw,
+          total_weight: line.weight ?? line.total_weight,
+        })),
+      }),
+    })
+    setBusy(false)
+    if (response.status === 422) {
+      const body = await readError(response)
+      setFieldErrors(body.field_errors || {})
+      setError(body.message || "Could not save plan")
+      return
+    }
+    if (!response.ok) {
+      setError((await readError(response)).message || "Could not save plan")
+      return
+    }
+    const body = (await response.json()) as { item: LoadingRow }
+    setMessage(`Saved ${body.item.plan_line_count || 0} plan rows`)
+    onPlanChange(body.item)
+  }
+
+  return (
+    <div className="container-plan-view">
+      <p className="muted">
+        Edit the loading plan here (or import Excel on Photos). Mix numbers drive 3D pallets.
+        {filename ? ` · Source: ${filename}` : ""}
+      </p>
+      {warnings.map((warning, index) => (
+        <div key={index} className="banner warn">{warning.message}</div>
+      ))}
+      {hiddenCount && !warnings.length ? (
+        <div className="banner warn">
+          {hiddenCount} row(s) were hidden in Excel but are still included until you save edits.
+        </div>
+      ) : null}
+      {error ? <div className="banner err">{error}</div> : null}
+      {message ? <div className="banner ok">{message}</div> : null}
+
+      <Field label="Container number (from plan)">
+        <input
+          value={containerNumber}
+          disabled={disabled || busy}
+          onChange={(event) => setContainerNumber(event.target.value)}
+          placeholder="Optional"
+        />
+      </Field>
+
+      <div className="container-plan-totals">
+        <div><dt>Rows</dt><dd>{lines.length}</dd></div>
+        <div><dt>Valid marks</dt><dd>{validCount}</dd></div>
+        <div><dt>Pallets (mix)</dt><dd>{pallets.length}</dd></div>
+        <div><dt>Total weight</dt><dd><strong>{formatWeight(totalWeight)}</strong> kg</dd></div>
+      </div>
+
+      {pallets.length ? (
+        <div className="table-wrap container-plan-mix-summary">
+          <table>
+            <thead>
+              <tr>
+                <th>Mix / pallet</th>
+                <th>Side</th>
+                <th>Marks</th>
+                <th>Names</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pallets.map((pallet) => (
+                <tr key={pallet.mix} className={pallet.marks.length > 1 ? "plan-mix-multi" : undefined}>
+                  <td>P{pallet.mix}</td>
+                  <td>{pallet.side}</td>
+                  <td><strong>{pallet.marks.length}</strong></td>
+                  <td className="muted">{pallet.marks.map((m) => m.name).join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      <div className="container-loading-actions">
+        <button className="btn" type="button" disabled={disabled || busy || validCount < 1} onClick={() => void savePlan()}>
+          {busy ? "Saving…" : "Save plan"}
+        </button>
+        <button className="btn-quiet" type="button" disabled={disabled || busy} onClick={addRow}>
+          Add row
+        </button>
+      </div>
+
+      <h3 className="container-plan-heading">Plan rows</h3>
+      <div className="table-wrap">
+        <table className="container-plan-edit-table">
+          <thead>
+            <tr>
+              <th>No</th>
+              <th>Mix</th>
+              <th>Code</th>
+              <th>Name</th>
+              <th>CTN</th>
+              <th>kg</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line, index) => (
+              <tr key={index} className={line.hidden ? "plan-row-hidden" : undefined}>
+                <td>
+                  <input
+                    className="plan-cell"
+                    type="number"
+                    disabled={disabled || busy}
+                    value={line.no ?? ""}
+                    onChange={(event) => patchLine(index, { no: numOrNull(event.target.value) })}
+                  />
+                </td>
+                <td>
+                  <input
+                    className={`plan-cell ${fieldErrors[`lines.${index}.mix`] ? "invalid" : ""}`}
+                    type="number"
+                    min={1}
+                    disabled={disabled || busy}
+                    value={line.mix ?? ""}
+                    onChange={(event) => patchLine(index, { mix: numOrNull(event.target.value) })}
+                  />
+                </td>
+                <td>
+                  <input
+                    className="plan-cell"
+                    disabled={disabled || busy}
+                    value={line.customer_code ?? ""}
+                    onChange={(event) => patchLine(index, { customer_code: event.target.value })}
+                  />
+                </td>
+                <td>
+                  <input
+                    className={`plan-cell plan-cell-name ${fieldErrors[`lines.${index}.name`] ? "invalid" : ""}`}
+                    disabled={disabled || busy}
+                    value={line.name ?? ""}
+                    onChange={(event) => patchLine(index, { name: event.target.value })}
+                    placeholder="Mark name"
+                  />
+                </td>
+                <td>
+                  <input
+                    className="plan-cell"
+                    type="number"
+                    disabled={disabled || busy}
+                    value={line.cartons ?? ""}
+                    onChange={(event) => patchLine(index, { cartons: numOrNull(event.target.value) })}
+                  />
+                </td>
+                <td>
+                  <input
+                    className="plan-cell"
+                    type="number"
+                    step="any"
+                    disabled={disabled || busy}
+                    value={line.weight ?? ""}
+                    onChange={(event) => patchLine(index, { weight: floatOrNull(event.target.value) })}
+                  />
+                </td>
+                <td>
+                  <button
+                    className="btn-quiet"
+                    type="button"
+                    disabled={disabled || busy}
+                    onClick={() => removeRow(index)}
+                  >
+                    Remove
+                  </button>
+                  {line.hidden ? <span className="badge warn">Hidden</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={5} className="muted">Total weight</td>
+              <td><strong>{formatWeight(totalWeight)}</strong></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function numOrNull(raw: string): number | null {
+  if (raw.trim() === "") return null
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.trunc(value) : null
+}
+
+function floatOrNull(raw: string): number | null {
+  if (raw.trim() === "") return null
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
+}
+
+function formatWeight(value: number): string {
+  if (!Number.isFinite(value)) return "0"
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100)
 }
 
 function CheckCard({ check }: { check: LoadingCheck }) {
@@ -483,6 +1089,7 @@ function ContainerLoadingPanel({
   const [files, setFiles] = useState<LoadingFile[]>([])
   const [previews, setPreviews] = useState<Record<number, string>>({})
   const [error, setError] = useState("")
+  const [notice, setNotice] = useState("")
   const [busy, setBusy] = useState(false)
   const [openFileId, setOpenFileId] = useState<number | null>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
@@ -558,6 +1165,7 @@ function ContainerLoadingPanel({
     if (!list?.length || disabled) return
     setBusy(true)
     setError("")
+    setNotice("")
     const form = new FormData()
     form.append("file", list[0])
     const response = await api(`${API}/${itemId}/plan`, { method: "POST", body: form })
@@ -568,6 +1176,10 @@ function ContainerLoadingPanel({
       return
     }
     const body = (await response.json()) as { item: LoadingRow }
+    const warn = body.item.plan?.warnings?.[0]?.message
+    const hidden = body.item.plan?.hidden_row_count || 0
+    if (warn) setNotice(warn)
+    else if (hidden) setNotice(`${hidden} Excel row(s) were hidden but still loaded into the plan.`)
     onPlanChange(body.item)
   }
 
@@ -620,6 +1232,7 @@ function ContainerLoadingPanel({
         Click a photo to view and extract marks (2 pallets, multiple customers). Upload a loading plan Excel to check against.
       </p>
       {error ? <div className="banner err">{error}</div> : null}
+      {notice ? <div className="banner warn">{notice}</div> : null}
 
       <div className="container-loading-actions">
         <button className="btn" type="button" disabled={disabled || busy} onClick={() => uploadRef.current?.click()}>

@@ -114,6 +114,40 @@ def test_container_loading_crud_and_images(client, tmp_path, monkeypatch):
     assert patched_extract.json()["extracted"]["notes"] == "edited"
     assert patched_extract.json()["extracted"]["pallets"][1]["marks"][0]["cartons"] == 50
 
+    # In-app plan editor (JSON) — before Excel import
+    bad_plan = client.put(
+        f"/api/container-loading/{item_id}/plan",
+        json={"lines": [{"mix": 1, "name": "", "weight": 10}]},
+    )
+    assert bad_plan.status_code == 422
+
+    bad_mix = client.put(
+        f"/api/container-loading/{item_id}/plan",
+        json={"lines": [{"mix": 0, "name": "MARK A", "weight": 10}]},
+    )
+    assert bad_mix.status_code == 422
+
+    put_plan = client.put(
+        f"/api/container-loading/{item_id}/plan",
+        json={
+            "container_number": "MANUAL-1",
+            "lines": [
+                {"no": 1, "mix": 1, "name": "MARK A", "customer_code": "100", "cartons": 2, "weight": 10.5},
+                {"no": 2, "mix": 1, "name": "MARK B", "customer_code": "100", "cartons": 3, "weight": 20},
+                {"no": 3, "mix": 2, "name": "MARK C", "weight": 5},
+            ],
+        },
+    )
+    assert put_plan.status_code == 200, put_plan.text
+    manual = put_plan.json()["item"]
+    assert manual["plan_line_count"] == 3
+    assert manual["plan"]["line_count"] == 3
+    assert manual["plan"]["total_weight"] == 35.5
+    assert manual["plan_filename"] == "manual"
+    assert manual["check"] is None
+    got = client.get(f"/api/container-loading/{item_id}")
+    assert got.json()["item"]["plan"]["lines"][0]["name"] == "MARK A"
+
     assert SAMPLE_PLAN.is_file()
     plan_upload = client.post(
         f"/api/container-loading/{item_id}/plan",
@@ -126,6 +160,29 @@ def test_container_loading_crud_and_images(client, tmp_path, monkeypatch):
     # container_no was already set; plan fills only when empty (no Cont Tracker link)
     assert plan_item["container_no"] == "MSCU999"
     assert plan_item.get("container_row_id") is None
+
+    # Edit after Excel import via JSON save
+    edited_lines = [
+        {**line, "weight": line.get("weight") or 1}
+        for line in plan_item["plan"]["lines"][:2]
+    ]
+    edited_lines[0]["name"] = "EDITED MARK"
+    re_put = client.put(
+        f"/api/container-loading/{item_id}/plan",
+        json={"container_number": plan_item["plan"]["container_number"], "lines": edited_lines},
+    )
+    assert re_put.status_code == 200, re_put.text
+    assert re_put.json()["item"]["plan_line_count"] == 2
+    assert re_put.json()["item"]["plan"]["lines"][0]["name"] == "EDITED MARK"
+    assert re_put.json()["item"]["plan"].get("hidden_row_count") == 0
+
+    # Restore full Excel for the rest of the test (plan check)
+    plan_upload = client.post(
+        f"/api/container-loading/{item_id}/plan",
+        files={"file": ("Container Load DR1249.xlsx", SAMPLE_PLAN.read_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert plan_upload.status_code == 200, plan_upload.text
+    plan_item = plan_upload.json()["item"]
 
     check_payload = {
         "ok": False,
